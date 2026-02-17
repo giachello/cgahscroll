@@ -3,7 +3,7 @@
 ; Conventions: routines dont' save AX,BX,CX,DX, but do save SI,DI,BP,ES if used. Stack params are WORDs unless noted otherwise. Screen buffer is accessed via ES.
 
 CLOCK_TICKS EQU 19912 ; number of PIT ticks for ~1/18.2 second delay (for smooth scrolling)
-
+CGA_BASE EQU 0B800h
 
 [map all scroll.map]
 CPU 8086
@@ -14,6 +14,9 @@ start:
     ; Set DS = CS
     push cs
     pop ds
+    ; Set ES = CGA base for direct screen access
+    mov ax, CGA_BASE
+    mov es, ax
 
     ; Switch to CGA 320x200 4-color mode (mode 4)
     mov ax, 0004h
@@ -62,7 +65,14 @@ scroll_loop:
     ; Erase sprites at old positions
     call erase_sprites
     ; Update sprite positions
+    mov ax, 2
+    cmp word [start_addr], 39
+    jne .have_update_scroll_delta
+    mov ax, -78
+.have_update_scroll_delta:
+    push ax
     call update_sprites
+    add sp, 2
 
     call get_scancode
 
@@ -81,15 +91,19 @@ scroll_loop:
 
 .up:
     sub word [sprites_list+4], 4
+    sub word [sprites_list+10], 160
     jmp .continue
 .down:
     add word [sprites_list+4], 4
+    add word [sprites_list+10], 160
     jmp .continue
 .left:
     sub word [sprites_list+2], 4
+    dec word [sprites_list+10]
     jmp .continue
 .right:
     add word [sprites_list+2], 4
+    inc word [sprites_list+10]
     jmp .continue
 
 .continue:
@@ -156,6 +170,9 @@ scroll_loop:
     call fill_rect
     add sp, 10
 
+    cmp byte [sprites_list+SPRITE_COLLIDE], 0
+    jne exit_to_dos
+
     jmp scroll_loop
 
     ; Wait for key
@@ -180,10 +197,7 @@ fill_rect:
     mov bp, sp
     push si
     push di
-    push es
 
-    mov ax, 0B800h
-    mov es, ax
     ; Build 4-pixel pattern byte from 2-bit color
     mov al, [bp+4]
     and al, 3
@@ -310,7 +324,7 @@ fill_rect:
     inc si
     cmp si, [bp+6]     ; y2
     jbe .y_loop
-    pop es
+
     pop di
     pop si
     pop bp
@@ -318,7 +332,7 @@ fill_rect:
 
 ; -----------------------------
 ; Draw sprite at (x,y)
-; Stack params (word): x, y, sprite_ptr, collide_flag_ptr
+; Stack params (word): start_addr_bytes, x, y, sprite_ptr, collide_flag_ptr
 ; Sprite format (DS: sprite_ptr):
 ;   dw width_pixels   (multiple of 4)
 ;   dw height_pixels
@@ -332,13 +346,6 @@ draw_sprite:
     sub sp, 12         ; locals: [bp-2]=draw_bytes, [bp-4]=start_byte, [bp-6]=bytes_per_row, [bp-8]=skip_right, [bp-10]=flag_ptr, [bp-12]=parity
     push si
     push di
-    push es
-    push bx
-    push cx
-    push dx
-
-    mov ax, 0B800h
-    mov es, ax
 
     mov bx, [bp+4]     ; collide_flag_ptr
     mov [bp-10], bx
@@ -388,29 +395,12 @@ draw_sprite:
     mov [bp-8], ax     ; skip_right
 
     push cx             ; save row count for loops
-    ; Compute initial scanline base in BX and parity in DL
     mov ax, [bp+8]     ; y start
     mov dl, al
     and dl, 1
     mov [bp-12], dl
-    mov bx, ax
-    and bx, 1
-    mov cl, 13
-    shl bx, cl         ; (y & 1) * 0x2000
-    shr ax, 1
-    mov cl, 4
-    shl ax, cl          ; (y >> 1) * 16
-    mov cx, ax
-    shl cx, 1
-    shl cx, 1          ; (y >> 1) * 64
-    add cx, ax         ; (y >> 1) * 80
-    add bx, cx         ; line base
-    ; Apply scroll offset so drawing matches displayed position
-    mov ax, [start_addr]
-    shl ax, 1          ; words -> bytes
-    add bx, ax
-    ; Add x byte offset (x is multiple of 4)
-    add bx, [bp-4]
+    mov bx, [bp+12]    ; cached sprite start address in CGA buffer
+    add bx, [bp-4]     ; apply clipped x byte offset
     pop cx             ; restore row count for loops
 
 .row_loop:
@@ -425,8 +415,10 @@ draw_sprite:
     and ax, [si]       ; apply mask (1=keep screen, 0=draw)
     cmp ax, dx
     je .no_collide_w
-    mov dx, [bp-10]
-    mov byte [dx], 1
+    push bx
+    mov bx, [bp-10]
+    mov byte [bx], 1
+    pop bx
 .no_collide_w:
     or  ax, [di]       ; apply picture
     mov [es:bx], ax    ; write back to screen
@@ -443,8 +435,10 @@ draw_sprite:
     and al, [si]
     cmp al, dl
     je .no_collide_b
-    mov dx, [bp-10]
-    mov byte [dx], 1
+    push bx
+    mov bx, [bp-10]
+    mov byte [bx], 1
+    pop bx
 .no_collide_b:
     or  al, [di]
     mov [es:bx], al
@@ -476,10 +470,6 @@ draw_sprite:
 
 .done:
     mov ax,[bp-10]
-    pop dx
-    pop cx
-    pop bx
-    pop es
     pop di
     pop si
     add sp, 12
@@ -488,121 +478,227 @@ draw_sprite:
 
 ; -----------------------------
 ; Sprite list helpers
-; Entry layout (12 bytes):
-;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, db collide_flag, db pad
+; Entry layout (14 bytes):
+;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db pad
 init_sprites:
-    push ax
-    push bx
-    push cx
     push si
     mov cl, [sprites_count]
     xor ch, ch
     mov si, sprites_list
+
 .loop:
-    mov byte [si+10], 0    ; clear collision flag
-    mov bx, [si]       ; sprite ptr
-    push word [si+2]   ; x
-    push word [si+4]   ; y
+    push cx
+
+    mov byte [si+SPRITE_COLLIDE], 0    ; clear collision flag
+    ; Compute and cache the sprite's video buffer start address for faster drawing later. Also clear the collision flag byte.
+    mov ax, [si+SPRITE_Y]         ; y
+    mov bx, ax
+    and bx, 1
+    mov cl, 13
+    shl bx, cl             ; (y & 1) * 0x2000
+    shr ax, 1
+    mov cl, 4
+    shl ax, cl             ; (y >> 1) * 16
+    mov dx, ax
+    shl dx, 1
+    shl dx, 1              ; (y >> 1) * 64
+    add dx, ax             ; (y >> 1) * 80
+    add bx, dx
+    mov ax, [start_addr]
+    shl ax, 1              ; words -> bytes
+    add bx, ax
+    mov ax, [si+2]         ; x
+    shr ax, 1
+    shr ax, 1              ; x / 4
+    add bx, ax
+    mov [si+SPRITE_VBUF_ADDR], bx        ; cached video-buffer start address
+
+    ; Now draw the sprite
+    push word [si+SPRITE_VBUF_ADDR]  ; cached start address
+    push word [si+SPRITE_X]   ; x
+    push word [si+SPRITE_Y]   ; y
+    mov bx, [si+SPRITE_PTR]       ; sprite ptr
     push bx
-    lea bx, [si+10]    ; collide_flag ptr
+    lea bx, [si+SPRITE_COLLIDE]    ; collide_flag ptr
     push bx
     call draw_sprite
-    add sp, 8
+    add sp, 10
 
-    add si, 12
+    pop cx
+    add si, SPRITE_STRUCT_SIZE
     loop .loop
     pop si
-    pop cx
-    pop bx
-    pop ax
     ret
 
 erase_sprites:
-    push ax
-    push bx
-    push cx
     push si
     mov cl, [sprites_count]
     xor ch, ch
     mov si, sprites_list
 .loop:
-    mov bx, [si]       ; sprite ptr
-    push word [si+2]   ; x
-    push word [si+4]   ; y
-    push bx
+    push cx
+    push word [si+SPRITE_VBUF_ADDR]  ; cached start address
+    push word [si+SPRITE_X]   ; x
+    push word [si+SPRITE_Y]   ; y
+    push word [si+SPRITE_PTR]       ; sprite ptr
     call clear_sprite
-    add sp, 6
-    add si, 12
+    add sp, 8
+    pop cx
+    add si, SPRITE_STRUCT_SIZE
     loop .loop
     pop si
-    pop cx
-    pop bx
-    pop ax
     ret
 
 update_sprites:
-    push ax
-    push cx
+    push bp
+    mov bp, sp
+    push di
     push si
+
+    ; Input: [bp+4] = scroll-byte delta from erase phase to upcoming draw phase.
+    mov bx, [bp+4]
+
     mov cl, [sprites_count]
     xor ch, ch
     mov si, sprites_list
 .loop:
-    mov ax, [si+2]     ; x
-    add ax, [si+6]     ; vx
-    mov [si+2], ax
-    mov ax, [si+4]     ; y
-    add ax, [si+8]     ; vy
-    mov [si+4], ax
-    add si, 12
-    loop .loop
-    pop si
+    push cx
+
+    mov ax, [si+SPRITE_X]     ; x
+    add ax, [si+SPRITE_VX]     ; vx
+    mov [si+SPRITE_X], ax
+    mov dx, [si+SPRITE_Y]     ; old y
+    mov di, dx
+    add di, [si+SPRITE_VY]     ; new y
+    mov [si+SPRITE_Y], di
+
+    mov ax, [si+SPRITE_VBUF_ADDR]
+    ; x delta in bytes: vx / 4
+    mov cx, [si+SPRITE_VX]
+    sar cx, 1
+    sar cx, 1
+    add ax, cx
+
+    ; y delta in bytes:
+    ; even vy: vy * 80
+    ; odd vy: (vy-1) * 80 plus odd/even scanline adjustment
+    mov dx, [si+SPRITE_VY]
+    test dx, 1
+    jnz .vy_odd
+
+    mov cx, dx
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1          ; *16
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1          ; *64
+    add cx, dx         ; *80
+    add ax, cx
+    jmp .vy_done
+
+.vy_odd:
+    test dx, dx
+    js .vy_odd_neg
+
+    ; positive odd vy: (vy-1) * 80
+    dec dx
+    mov cx, dx
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    add cx, dx
+    add ax, cx
+
+    ; vy odd flips parity: if new y is odd, old y was even
+    test di, 1
+    jz .vy_pos_old_odd
+    add ax, 8192
+    jmp .vy_done
+.vy_pos_old_odd:
+    sub ax, 8112
+    jmp .vy_done
+
+.vy_odd_neg:
+    ; negative odd vy: (vy+1) * 80
+    inc dx
+    mov cx, dx
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1
+    shl cx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    add cx, dx
+    add ax, cx
+
+    ; vy odd flips parity: if new y is odd, old y was even
+    test di, 1
+    jz .vy_neg_old_odd
+    add ax, 8112
+    jmp .vy_done
+.vy_neg_old_odd:
+    sub ax, 8192
+.vy_done:
+
+    add ax, bx         ; scroll delta for upcoming draw
+    mov [si+10], ax
+
     pop cx
-    pop ax
+    add si, 14
+    dec cx
+    jnz .loop
+    pop si
+    pop di
+    pop bp
     ret
 
 draw_sprites:
-    push ax
-    push bx
-    push cx
     push si
     mov cl, [sprites_count]
     xor ch, ch
     mov si, sprites_list
 .loop:
-    mov bx, [si]       ; sprite ptr
-    push word [si+2]   ; x
-    push word [si+4]   ; y
-    push bx
-    lea bx, [si+10]    ; collide_flag ptr
+    push cx
+    push word [si+SPRITE_VBUF_ADDR]  ; cached start address
+    push word [si+SPRITE_X]   ; x
+    push word [si+SPRITE_Y]   ; y
+    push word [si+SPRITE_PTR]       ; sprite ptr
+    lea bx, [si+SPRITE_COLLIDE]    ; collide_flag ptr
     push bx
     call draw_sprite
-    add sp, 8
+    add sp, 10
+    pop cx
 
-    add si, 12
+    add si, SPRITE_STRUCT_SIZE
     loop .loop
     pop si
-    pop cx
-    pop bx
-    pop ax
     ret
 
 ; -----------------------------
 ; Clear sprite area with color 0 at (x,y)
-; Stack params (word): x, y, sprite_ptr
+; Stack params (word): start_addr_bytes, x, y, sprite_ptr
 clear_sprite:
     push bp
     mov bp, sp
     sub sp, 4          ; locals: [bp-2]=draw_bytes, [bp-4]=start_byte
     push si
     push di
-    push es
-    push bx
-    push cx
-    push dx
-
-    mov ax, 0B800h
-    mov es, ax
 
     mov si, [bp+4]     ; sprite_ptr
     mov ax, [si]       ; width_pixels
@@ -641,30 +737,11 @@ clear_sprite:
     cmp dx, 0
     je .done
 
-    push cx
-    ; Compute initial scanline base in DI and parity in DL
     mov ax, [bp+6]     ; y start
     mov dl, al
     and dl, 1
-    mov di, ax
-    and di, 1
-    mov cl, 13
-    shl di, cl         ; (y & 1) * 0x2000
-    shr ax, 1
-    mov cl, 4
-    shl ax, cl          ; (y >> 1) * 16
-    mov bx, ax
-    shl bx, 1
-    shl bx, 1          ; (y >> 1) * 64
-    add bx, ax         ; (y >> 1) * 80
-    add di, bx         ; line base
-    ; Apply scroll offset so clearing matches displayed position
-    mov ax, [start_addr]
-    shl ax, 1          ; words -> bytes
-    add di, ax
-    ; Add x byte offset (x is multiple of 4)
-    add di, [bp-4]
-    pop cx
+    mov di, [bp+10]    ; cached sprite start address in CGA buffer
+    add di, [bp-4]     ; apply clipped x byte offset
 
     xor ax, ax
 .row_loop:
@@ -694,10 +771,6 @@ clear_sprite:
     loop .row_loop
 
 .done:
-    pop dx
-    pop cx
-    pop bx
-    pop es
     pop di
     pop si
     add sp, 4
@@ -803,6 +876,7 @@ set_cursor_pos:
 ; -----------------------------
 ; Install INT 9h handler (keyboard IRQ)
 install_int9:
+    push es
     cli
     mov ah, 35h
     mov al, 09h
@@ -813,6 +887,7 @@ install_int9:
     mov ax, 2509h
     int 21h
     sti
+    pop es
     ret
 
 ; -----------------------------
@@ -831,8 +906,6 @@ restore_int9:
 ; -----------------------------
 ; get next scancode from buffer, or 0 if empty. Return in AL.
 get_scancode:
-    push bx
-
     cli
     xor bh, bh
     mov bl, [sc_tail]
@@ -848,8 +921,6 @@ get_scancode:
     mov al, 0
 .got_scancode:
     sti
-
-    pop bx
     ret
 ; -----------------------------
 ; INT 9h handler: read scancode, set flag, flush BIOS buffer
@@ -915,6 +986,7 @@ set_pit_rate:
 ; -----------------------------
 ; Install INT 1Ch handler (BIOS timer tick)
 install_int1c:
+    push es
     cli
     mov ah, 35h
     mov al, 1Ch
@@ -925,6 +997,7 @@ install_int1c:
     mov ax, 251Ch
     int 21h
     sti
+    pop es
     ret
 
 ; -----------------------------
@@ -985,13 +1058,24 @@ tick_acc dw 0
 
 start_addr dw 0
 sprites_count db 16
+
+SPRITE_PTR equ 0
+SPRITE_X equ 2
+SPRITE_Y equ 4
+SPRITE_VX equ 6
+SPRITE_VY equ 8
+SPRITE_VBUF_ADDR equ 10
+SPRITE_COLLIDE equ 12
+SPRITE_STRUCT_SIZE equ 14
+
 sprites_list:
     dw space_ship
     dw 8            ; x
     dw 8            ; y
     dw 0              ; vx
     dw 0              ; vy
-    db 0              ; collide
+    dw 0FFFFh       ; vbuf_addr
+    db 0              ; collide 0= no collision, 1=collision (overlaps non-background pixels), 2-8 animation of explosion
     db 0
 
     dw alien_ship
@@ -999,6 +1083,7 @@ sprites_list:
     dw 8            ; y
     dw -4              ; vx
     dw -1              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1007,6 +1092,7 @@ sprites_list:
     dw 10            ; y
     dw 4              ; vx
     dw 1              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1015,6 +1101,7 @@ sprites_list:
     dw 20            ; y
     dw 4              ; vx
     dw -1              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1023,6 +1110,7 @@ sprites_list:
     dw 30            ; y
     dw -4              ; vx
     dw 2              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1031,6 +1119,7 @@ sprites_list:
     dw 40            ; y
     dw -4              ; vx
     dw -2              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1039,6 +1128,7 @@ sprites_list:
     dw 50            ; y
     dw -4              ; vx
     dw 4              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1047,6 +1137,7 @@ sprites_list:
     dw 60            ; y
     dw 4              ; vx
     dw -4              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1055,6 +1146,7 @@ sprites_list:
     dw 70            ; y
     dw 0              ; vx
     dw 0              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1063,6 +1155,7 @@ sprites_list:
     dw 80            ; y
     dw 4              ; vx
     dw -1              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1071,6 +1164,7 @@ sprites_list:
     dw 90            ; y
     dw 0              ; vx
     dw 0              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1079,6 +1173,7 @@ sprites_list:
     dw 100            ; y
     dw 4              ; vx
     dw 2              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1087,6 +1182,7 @@ sprites_list:
     dw 110            ; y
     dw 4              ; vx
     dw -2              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1095,6 +1191,7 @@ sprites_list:
     dw 120            ; y
     dw 0              ; vx
     dw 0              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1103,6 +1200,7 @@ sprites_list:
     dw 130            ; y
     dw 8             ; vx
     dw -8              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
@@ -1111,6 +1209,7 @@ sprites_list:
     dw 140            ; y
     dw 8              ; vx
     dw 8              ; vy
+    dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
 
