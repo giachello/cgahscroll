@@ -68,6 +68,8 @@ scroll_loop:
 
     ; Erase sprites at old positions
     call erase_sprites
+    ; Erase laser at old position
+    call erase_laser
     ; Update sprite positions
     mov ax, 2
     cmp word [start_addr], 39
@@ -77,6 +79,8 @@ scroll_loop:
     push ax
     call update_sprites
     add sp, 2
+    ; Advance laser for this cycle
+    call advance_laser
 
     call get_scancode
 
@@ -89,6 +93,8 @@ scroll_loop:
     je .left
     cmp al, 4Dh            ; right
     je .right
+    cmp al, 39h            ; space (make)
+    je .fire
     cmp al, 01h            ; Esc
     je exit_to_dos
     jmp .continue
@@ -109,6 +115,9 @@ scroll_loop:
     add word [sprites_list+2], 4
     inc word [sprites_list+10]
     jmp .continue
+.fire:
+    call fire_laser
+    jmp .continue
 
 .continue:
     ; Advance scroll position (wrap every 40 words)
@@ -119,6 +128,9 @@ scroll_loop:
 .set_scroll:
     mov bx, [start_addr]
     call set_start_addr
+
+    ; Draw laser before sprites so sprite redraw can collide with it.
+    call draw_laser
 
     ; Redraw sprites at new positions (capture background then draw)
     call draw_sprites
@@ -329,6 +341,81 @@ fill_rect:
     pop di
     pop si
     pop bp
+    ret
+
+; -----------------------------
+; Laser: 4-pixel white horizontal dash, x aligned to 4.
+; Uses screen-space coordinates in laser_x/laser_y.
+erase_laser:
+    cmp byte [laser_active], 0
+    je .done
+    mov ax, [laser_x]
+    push ax
+    mov ax, [laser_y]
+    push ax
+    mov ax, [laser_x]
+    add ax, 3
+    push ax
+    mov ax, [laser_y]
+    push ax
+    xor ax, ax
+    push ax
+    call fill_rect
+    add sp, 10
+.done:
+    ret
+
+advance_laser:
+    cmp byte [laser_active], 0
+    je .done
+    mov ax, [laser_x]
+    add ax, 12
+    mov [laser_x], ax
+    ; 4-pixel dash occupies x..x+3, so x=316 touches the right edge.
+    cmp ax, 316
+    jb .done
+    mov byte [laser_active], 0
+.done:
+    ret
+
+draw_laser:
+    cmp byte [laser_active], 0
+    je .done
+    mov ax, [laser_x]
+    push ax
+    mov ax, [laser_y]
+    push ax
+    mov ax, [laser_x]
+    add ax, 3
+    push ax
+    mov ax, [laser_y]
+    push ax
+    mov ax, 3          ; white
+    push ax
+    call fill_rect
+    add sp, 10
+.done:
+    ret
+
+fire_laser:
+    ; Launch from 4 pixels right of sprite 0, 4 pixels below sprite top.
+    mov bx, [sprites_list+SPRITE_PTR]
+    mov ax, [sprites_list+SPRITE_X]
+    add ax, [bx]       ; right edge = x + sprite width
+    ; Keep 4-pixel boundary alignment without ever moving inside the ship.
+    add ax, 7
+    and ax, 0FFFCh     ; align up to next multiple of 4
+    cmp ax, 316
+    jae .done
+    mov [laser_x], ax
+
+    mov ax, [sprites_list+SPRITE_Y]
+    add ax, 14
+    cmp ax, 200
+    jae .done
+    mov [laser_y], ax
+    mov byte [laser_active], 1
+.done:
     ret
 
 ; -----------------------------
@@ -1129,5 +1216,8 @@ tick_flag db 0
 old1c_off dw 0
 old1c_seg dw 0
 tick_acc dw 0
+laser_x dw 0
+laser_y dw 0
+laser_active db 0
 
 %include "sprites.asm"
