@@ -343,19 +343,19 @@ fill_rect:
 draw_sprite:
     push bp
     mov bp, sp
-    sub sp, 12         ; locals: [bp-2]=draw_bytes, [bp-4]=start_byte, [bp-6]=bytes_per_row, [bp-8]=skip_right, [bp-10]=flag_ptr, [bp-12]=parity
+    sub sp, 8          ; locals: [bp-2]=draw_bytes, [bp-4]=start_byte, [bp-6]=flag_ptr, [bp-8]=parity
     push si
     push di
 
     mov bx, [bp+4]     ; collide_flag_ptr
-    mov [bp-10], bx
+    mov [bp-6], bx
     mov si, [bp+6]     ; sprite_ptr
     mov ax, [si]       ; width_pixels
     mov cx, [si+2]     ; height_pixels (row count)
     mov dx, ax
     shr dx, 1
     shr dx, 1          ; bytes_per_row
-    mov [bp-6], dx
+    mov [bp-2], dx     ; draw_bytes (full row; no right-edge clipping)
     lea si, [si+4]     ; mask_ptr
     mov ax, dx
     mul cx             ; AX = bytes_per_row * height
@@ -373,35 +373,26 @@ draw_sprite:
     mov cx, bx
 .rows_ok:
 
-    ; Clip X (x is multiple of 4)
-    mov dx, [bp-6]     ; bytes_per_row
+    ; Clip X (x is multiple of 4). If the sprite would clip at right edge,
+    ; skip drawing entirely instead of partial scanlines.
     mov bx, [bp+10]    ; x start
     cmp bx, 320
     jae .done
     shr bx, 1
     shr bx, 1          ; start_byte
     mov [bp-4], bx
-    mov ax, 80
-    sub ax, bx         ; visible_bytes
-    cmp dx, ax
-    jbe .bytes_ok
-    mov dx, ax
-.bytes_ok:
-    mov [bp-2], dx     ; draw_bytes
-    cmp dx, 0
-    je .done
-    mov ax, [bp-6]     ; bytes_per_row
-    sub ax, [bp-2]     ; subtract draw bytes 
-    mov [bp-8], ax     ; skip_right
+    mov dx, [bp-2]     ; draw_bytes
+    mov ax, bx
+    add ax, dx
+    cmp ax, 80
+    ja .done
 
-    push cx             ; save row count for loops
     mov ax, [bp+8]     ; y start
     mov dl, al
     and dl, 1
-    mov [bp-12], dl
+    mov [bp-8], dl
     mov bx, [bp+12]    ; cached sprite start address in CGA buffer
     add bx, [bp-4]     ; apply clipped x byte offset
-    pop cx             ; restore row count for loops
 
 .row_loop:
     push cx
@@ -416,7 +407,7 @@ draw_sprite:
     cmp ax, dx
     je .no_collide_w
     push bx
-    mov bx, [bp-10]
+    mov bx, [bp-6]
     mov byte [bx], 1
     pop bx
 .no_collide_w:
@@ -436,7 +427,7 @@ draw_sprite:
     cmp al, dl
     je .no_collide_b
     push bx
-    mov bx, [bp-10]
+    mov bx, [bp-6]
     mov byte [bx], 1
     pop bx
 .no_collide_b:
@@ -447,13 +438,8 @@ draw_sprite:
     inc di
 
 .row_done:
-    ; Skip clipped bytes on the right
-    mov ax, [bp-8]
-    add si, ax
-    add di, ax
-
     ; Advance to next scanline start
-    mov al, [bp-12]
+    mov al, [bp-8]
     test al, 1
     jz .even_to_odd
     sub bx, 8112       ; odd -> even
@@ -463,16 +449,16 @@ draw_sprite:
     add bx, 8192       ; even -> odd
     sub bx, [bp-2]
 .next_line:
-    xor byte [bp-12], 1
+    xor byte [bp-8], 1
 
     pop cx
     loop .row_loop
 
 .done:
-    mov ax,[bp-10]
+    mov ax,[bp-6]
     pop di
     pop si
-    add sp, 12
+    add sp, 8
     pop bp
     ret
 
@@ -720,22 +706,19 @@ clear_sprite:
     mov cx, bx
 .rows_ok:
 
-    ; Clip X (x is multiple of 4)
+    ; Clip X (x is multiple of 4). If the sprite would clip at right edge,
+    ; skip clearing entirely instead of partial scanlines.
     mov bx, [bp+8]     ; x start
     cmp bx, 320
     jae .done
     shr bx, 1
     shr bx, 1          ; start_byte
     mov [bp-4], bx
-    mov ax, 80
-    sub ax, bx         ; visible_bytes
-    cmp dx, ax
-    jbe .bytes_ok
-    mov dx, ax
-.bytes_ok:
-    mov [bp-2], dx     ; draw_bytes
-    cmp dx, 0
-    je .done
+    mov ax, bx
+    add ax, dx
+    cmp ax, 80
+    ja .done
+    mov [bp-2], dx     ; draw_bytes == bytes_per_row
 
     mov ax, [bp+6]     ; y start
     mov dl, al
