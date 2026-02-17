@@ -15,7 +15,7 @@ Enter codex and vibecoding.
 
 This is a horizontal scroll videogame. A space ship flys into a cavern. It avoids things (aliens, asteroids) and can destroy them using a laser beam. 
 
-The only way to do this on a IBM PC (which has a memory mapped video card, no graphics acceleration and just 500K instructions per second) is to use some hardware tricks. And I try to push the hardware as hard as possible.  I may change it to vertical scroll which should have better performance and smoother scrolling because CGA can only hardware scroll 8 pixels at a time horizontally but can do 1 line vertically.
+The only way to do this on a IBM PC (which has a memory mapped video card, no graphics acceleration and just 500K-1M memory access instructions per second) is to use some hardware tricks. And I try to push the hardware as hard as possible.  I may change it to vertical scroll which should have better performance and smoother scrolling because CGA can only hardware scroll 8 pixels at a time horizontally but can do 1 line vertically.
 
 
 ## Why are you doing this?
