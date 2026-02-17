@@ -59,8 +59,12 @@ scroll_loop:
 .got_tick:
     inc word [ticks_elapsed]
     mov byte [tick_flag], 0
-    test [ticks_elapsed], 3
+    test [ticks_elapsed], 1
     jnz scroll_loop   ; scroll every other tick
+
+;    mov al, [sc_head]
+;    cmp al, [sc_tail]
+;    je scroll_loop
 
     ; Erase sprites at old positions
     call erase_sprites
@@ -170,8 +174,8 @@ scroll_loop:
     call fill_rect
     add sp, 10
 
-    cmp byte [sprites_list+SPRITE_COLLIDE], 0
-    jne exit_to_dos
+    cmp byte [sprites_list+SPRITE_COLLIDE], 6
+    je exit_to_dos
 
     jmp scroll_loop
 
@@ -194,7 +198,7 @@ exit_to_dos:
 
 ; -----------------------------
 ; Fill rectangle (x1,y1)-(x2,y2) with color
-; Stack params (word): x1, y1, x2, y2, color
+; Stack params (word): x1, y1, x2, y2, color. 
 fill_rect:
     push bp
     mov bp, sp
@@ -405,7 +409,7 @@ draw_sprite:
     je .no_collide_w
     push bx             ; set the collide flag in the sprite 
     mov bx, [bp-6]
-    mov byte [bx], 1
+    or  byte [bx], 1    ; collision bit 0 => 1
     pop bx
     or  ax, [di]       ; apply picture
     mov [es:bx], ax
@@ -478,7 +482,6 @@ draw_sprite:
     pop bp
     ret
 
-; -----------------------------
 ; Sprite list helpers
 ; Entry layout (14 bytes):
 ;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db pad
@@ -490,17 +493,6 @@ init_sprites:
 
 .loop:
     push cx
-
-    ; Precompute sprite metadata once: bytes_per_row and picture pointer.
-    mov bx, [si+SPRITE_PTR]
-    mov ax, [bx]           ; width_pixels
-    shr ax, 1
-    shr ax, 1              ; bytes_per_row
-    mov [bx+4], ax
-    mul word [bx+2]        ; bytes_per_row * height
-    add ax, bx
-    add ax, 8              ; skip header to picture bytes
-    mov [bx+6], ax
 
     mov byte [si+SPRITE_COLLIDE], 0    ; clear collision flag
     ; Compute and cache the sprite's video buffer start address for faster drawing later. Also clear the collision flag byte.
@@ -565,112 +557,114 @@ erase_sprites:
 update_sprites:
     push bp
     mov bp, sp
+    sub sp, 4 ; locals: [bp-2] = scroll delta, [bp-4] = old_y
     push di
     push si
 
     ; Input: [bp+4] = scroll-byte delta from erase phase to upcoming draw phase.
-    mov bx, [bp+4]
+    mov ax, [bp+4]
+    mov [bp-2], ax
 
     mov cl, [sprites_count]
     xor ch, ch
     mov si, sprites_list
 .loop:
     push cx
+    mov al, [si+SPRITE_COLLIDE]
+    cmp al, 0
+    je .state_done
+    cmp al, 1
+    je .to_explode_1
+    cmp al, 3
+    je .to_explode_2
+    cmp al, 4
+    je .to_explode_3
+    cmp al, 5
+    je .to_explode_4
+    jmp .state_done
+
+.to_explode_1:
+    mov word [si+SPRITE_PTR], explode_1
+    mov byte [si+SPRITE_COLLIDE], 3
+    jmp .state_done
+
+.to_explode_2:
+    mov word [si+SPRITE_PTR], explode_2
+    mov byte [si+SPRITE_COLLIDE], 4
+    jmp .state_done
+
+.to_explode_3:
+    mov word [si+SPRITE_PTR], explode_3
+    mov byte [si+SPRITE_COLLIDE], 5
+    jmp .state_done
+
+.to_explode_4:
+    mov word [si+SPRITE_PTR], explode_4
+    mov byte [si+SPRITE_COLLIDE], 6
+
+.state_done:
 
     mov ax, [si+SPRITE_X]     ; x
     add ax, [si+SPRITE_VX]     ; vx
     mov [si+SPRITE_X], ax
     mov dx, [si+SPRITE_Y]     ; old y
+    mov [bp-4], dx
+
+    ; If movement mode byte is 1, use vy as cosine-table index.
+    cmp byte [si+SPRITE_MOVE_MODE], 1
+    jne .linear_y
+    mov ax, [si+SPRITE_VY]
+    inc ax
+    cmp ax, 40
+    jb .cos_idx_ok
+    xor ax, ax
+.cos_idx_ok:
+    mov [si+SPRITE_VY], ax
+    shl ax, 1
+    mov bx, ax
+    mov di, [cosine_table_40+bx]
+    mov [si+SPRITE_Y], di
+    jmp .y_updated
+
+.linear_y:
     mov di, dx
     add di, [si+SPRITE_VY]     ; new y
     mov [si+SPRITE_Y], di
 
-    mov ax, [si+SPRITE_VBUF_ADDR]
-    ; x delta in bytes: vx / 4
-    mov cx, [si+SPRITE_VX]
-    sar cx, 1
-    sar cx, 1
-    add ax, cx
+.y_updated:
 
-    ; y delta in bytes:
-    ; even vy: vy * 80
-    ; odd vy: (vy-1) * 80 plus odd/even scanline adjustment
-    mov dx, [si+SPRITE_VY]
-    test dx, 1
-    jnz .vy_odd
+    ; Recompute cached video-buffer address from absolute x/y and upcoming scroll.
+    mov ax, di
+    test ax, 8000h
+    jnz .addr_done
+    cmp ax, 200
+    jae .addr_done
 
+    mov bx, ax
+    and bx, 1
+    mov cl, 13
+    shl bx, cl                   ; (y & 1) * 0x2000
+    shr ax, 1
+    mov dx, ax
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1
+    shl dx, 1                    ; (y >> 1) * 16
     mov cx, dx
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1          ; *16
     shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1          ; *64
-    add cx, dx         ; *80
-    add ax, cx
-    jmp .vy_done
-
-.vy_odd:
-    test dx, dx
-    js .vy_odd_neg
-
-    ; positive odd vy: (vy-1) * 80
-    dec dx
-    mov cx, dx
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    add cx, dx
-    add ax, cx
-
-    ; vy odd flips parity: if new y is odd, old y was even
-    test di, 1
-    jz .vy_pos_old_odd
-    add ax, 8192
-    jmp .vy_done
-.vy_pos_old_odd:
-    sub ax, 8112
-    jmp .vy_done
-
-.vy_odd_neg:
-    ; negative odd vy: (vy+1) * 80
-    inc dx
-    mov cx, dx
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    add cx, dx
-    add ax, cx
-
-    ; vy odd flips parity: if new y is odd, old y was even
-    test di, 1
-    jz .vy_neg_old_odd
-    add ax, 8112
-    jmp .vy_done
-.vy_neg_old_odd:
-    sub ax, 8192
-.vy_done:
-
-    add ax, bx         ; scroll delta for upcoming draw
-    mov [si+10], ax
+    shl dx, 1                    ; (y >> 1) * 64
+    add cx, dx                   ; (y >> 1) * 80
+    add bx, cx
+    mov ax, [start_addr]
+    shl ax, 1
+    add ax, [bp-2]               ; next frame scroll base in bytes
+    add bx, ax
+    mov ax, [si+SPRITE_X]
+    shr ax, 1
+    shr ax, 1                    ; x / 4
+    add bx, ax
+    mov [si+SPRITE_VBUF_ADDR], bx
+.addr_done:
 
     pop cx
     add si, 14
@@ -678,6 +672,7 @@ update_sprites:
     jnz .loop
     pop si
     pop di
+    add sp, 4
     pop bp
     ret
 
@@ -688,6 +683,8 @@ draw_sprites:
     mov si, sprites_list
 .loop:
     push cx
+    cmp byte [si+SPRITE_COLLIDE], 6
+    jae .skip_draw
     push word [si+SPRITE_VBUF_ADDR]  ; cached start address
     push word [si+SPRITE_X]   ; x
     push word [si+SPRITE_Y]   ; y
@@ -696,6 +693,7 @@ draw_sprites:
     push bx
     call draw_sprite
     add sp, 10
+.skip_draw:
     pop cx
 
     add si, SPRITE_STRUCT_SIZE
@@ -1067,6 +1065,7 @@ SPRITE_VX equ 6
 SPRITE_VY equ 8
 SPRITE_VBUF_ADDR equ 10
 SPRITE_COLLIDE equ 12
+SPRITE_MOVE_MODE equ 13
 SPRITE_STRUCT_SIZE equ 14
 
 sprites_list:
@@ -1076,17 +1075,17 @@ sprites_list:
     dw 0              ; vx
     dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
-    db 0              ; collide 0= no collision, 1=collision (overlaps non-background pixels), 2-8 animation of explosion
-    db 0
+    db 0              ; collide 0= no collision, 1=collision (overlaps non-background pixels), 2-5 animation of explosion, 6 not visible, skip drawing
+    db 0            ; movement mode: 0=linear vy, 1=cosine (vy is index into cosine_table_40)
 
     dw alien_ship
     dw 300            ; x
-    dw 8            ; y
-    dw -4              ; vx
-    dw -1              ; vy
+    dw 150            ; y
+    dw -1              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
-    db 0
+    db 1
 
     dw asteroid
     dw 200            ; x
@@ -1214,9 +1213,12 @@ sprites_list:
     db 0              ; collide
     db 0
 
+cosine_table_40 dw 150,	149,	148,	145,	140,	135,	129,	123,	115,	108,	100,	92,	85,	77,	71,	65,	60,	55,	52,	51,	50,	51,	52,	55,	60,	65,	71,	77,	85,	92,	100,	108,	115,	123,	129,	135,	140,	145,	148,	149
+
+
 align 2
 
-alien_ship dw 16,8,0,0
+alien_ship dw 16,8,4,alien_ship+40
 db 0FFh,0CFh,0FFh,03Fh
 db 0FFh,0F3h,0FCh,0FFh
 db 0FFh,00h,00h,0Fh
@@ -1234,7 +1236,7 @@ db 0Ah,09h,06h,0Ah
 db 02h,02h,058h,08h
 db 00h,080h,0A0h,020h
 db 00h,02Ah,0AAh,080h
-space_ship dw 16,8,0,0
+space_ship dw 16,8,4,space_ship+40
 db 0FFh,0FFh,0FFh,0FFh
 db 0FFh,0FFh,0C3h,0FFh
 db 0FFh,0FFh,0F0h,03Fh
@@ -1252,7 +1254,7 @@ db 00h,06h,0A0h,040h
 db 00h,01Ah,0A9h,00h
 db 00h,015h,054h,00h
 db 00h,00h,00h,00h
-asteroid dw 8,8,0,0
+asteroid dw 8,8,2,asteroid+24
 db 0FCh,0Fh
 db 0F3h,033h
 db 0CCh,0CCh
@@ -1270,7 +1272,7 @@ db 044h,011h
 db 010h,041h
 db 04h,014h
 db 01h,040h
-hatched_box dw 8,8,0,0
+hatched_box dw 8,8,2,hatched_box+24
 db 00h,00h
 db 00h,00h
 db 00h,00h
@@ -1288,7 +1290,7 @@ db 099h,099h
 db 066h,066h
 db 099h,099h
 db 066h,066h
-explode_1 dw 8,8,0,0
+explode_1 dw 8,8,2,explode_1+24
 db 0FFh,0FFh
 db 0FFh,0FFh
 db 0FFh,0FFh
@@ -1306,7 +1308,7 @@ db 01h,080h
 db 00h,010h
 db 00h,00h
 db 00h,00h
-explode_2 dw 8,8,0,0
+explode_2 dw 8,8,2,explode_2+24
 db 0FFh,0FFh
 db 0FCh,0CFh
 db 0F3h,03Fh
@@ -1324,7 +1326,7 @@ db 010h,04h
 db 04h,080h
 db 00h,010h
 db 00h,00h
-explode_3 dw 8,8,0,0
+explode_3 dw 8,8,2,explode_3+24
 db 0F3h,0CFh
 db 0CFh,033h
 db 0CCh,033h
@@ -1342,7 +1344,7 @@ db 00h,081h
 db 06h,0Ch
 db 010h,018h
 db 01h,00h
-explode_4 dw 8,8,0,0
+explode_4 dw 8,8,2,explode_4+24
 db 03Fh,0CFh
 db 0CCh,0F3h
 db 0FFh,03Ch
