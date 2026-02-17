@@ -175,16 +175,19 @@ scroll_loop:
 
     jmp scroll_loop
 
-    ; Wait for key
-    mov ah, 00h
-    int 16h
-
     ; Back to text mode
 exit_to_dos:
     call restore_int1c
     call restore_int9
     xor ax, ax
     call set_pit_rate ; set clock back to 18.2hz
+
+
+    ; Wait for key
+    mov ah, 00h
+    int 16h
+
+
     mov ax, 0003h
     int 10h
     ret
@@ -336,8 +339,10 @@ fill_rect:
 ; Sprite format (DS: sprite_ptr):
 ;   dw width_pixels   (multiple of 4)
 ;   dw height_pixels
-;   db mask[height * (width/4)]
-;   db picture[height * (width/4)]
+;   dw bytes_per_row  (precomputed at init/load)
+;   dw pic_ptr        (precomputed at init/load)
+;   db mask[height * bytes_per_row]
+;   db picture[height * bytes_per_row]
 ; Mask semantics: 1 bits keep background, 0 bits allow picture to draw.
 ; Return the collide flag in ax: 0 = no collision, 1 = collision (sprite overlaps non-background pixels)
 draw_sprite:
@@ -349,21 +354,17 @@ draw_sprite:
 
     mov bx, [bp+4]     ; collide_flag_ptr
     mov [bp-6], bx
-    mov si, [bp+6]     ; sprite_ptr
-    mov ax, [si]       ; width_pixels
-    mov cx, [si+2]     ; height_pixels (row count)
-    mov dx, ax
-    shr dx, 1
-    shr dx, 1          ; bytes_per_row
+    mov bx, [bp+6]     ; sprite_ptr
+    mov cx, [bx+2]     ; height_pixels (row count)
+    mov dx, [bx+4]     ; precomputed bytes_per_row
     mov [bp-2], dx     ; draw_bytes (full row; no right-edge clipping)
-    lea si, [si+4]     ; mask_ptr
-    mov ax, dx
-    mul cx             ; AX = bytes_per_row * height
-    mov di, si
-    add di, ax         ; pic_ptr
+    lea si, [bx+8]     ; mask_ptr
+    mov di, [bx+6]     ; precomputed pic_ptr
     mov ax, [bp+8]     ; y start
 
     ; Clip Y
+    test ax, 8000h     ; y < 0 (signed) => out of bounds
+    jnz .done
     cmp ax, 200
     jae .done
     mov bx, 200
@@ -387,29 +388,33 @@ draw_sprite:
     cmp ax, 80
     ja .done
 
+    mov dx, cx          ; row count
     mov ax, [bp+8]     ; y start
-    mov dl, al
-    and dl, 1
-    mov [bp-8], dl
+    and al, 1
+    mov [bp-8], al
     mov bx, [bp+12]    ; cached sprite start address in CGA buffer
     add bx, [bp-4]     ; apply clipped x byte offset
 
 .row_loop:
-    push cx
-
     mov cx, [bp-2]     ; draw_bytes
-    shr cx, 1          ; word count
-    jz .last_byte
+    shr cx, 1          ; word count (sprites assumed multiple of 8px in X)
 .word_loop:
     mov ax, [es:bx]    ; get the screen pixels
-    mov dx, ax         ; keep original screen for collision compare
     and ax, [si]       ; apply mask (1=keep screen, 0=draw)
-    cmp ax, dx
+    cmp ax, [es:bx]
     je .no_collide_w
-    push bx
+    push bx             ; set the collide flag in the sprite 
     mov bx, [bp-6]
     mov byte [bx], 1
     pop bx
+    or  ax, [di]       ; apply picture
+    mov [es:bx], ax
+    add bx, 2
+    add si, 2
+    add di, 2
+    dec cx
+    jz .row_done_fast
+    jmp .word_loop_fast
 .no_collide_w:
     or  ax, [di]       ; apply picture
     mov [es:bx], ax    ; write back to screen
@@ -417,25 +422,6 @@ draw_sprite:
     add si, 2
     add di, 2
     loop .word_loop
-
-.last_byte:
-    test byte [bp-2], 1
-    jz .row_done
-    mov al, [es:bx]
-    mov dl, al
-    and al, [si]
-    cmp al, dl
-    je .no_collide_b
-    push bx
-    mov bx, [bp-6]
-    mov byte [bx], 1
-    pop bx
-.no_collide_b:
-    or  al, [di]
-    mov [es:bx], al
-    inc bx
-    inc si
-    inc di
 
 .row_done:
     ; Advance to next scanline start
@@ -451,8 +437,38 @@ draw_sprite:
 .next_line:
     xor byte [bp-8], 1
 
-    pop cx
-    loop .row_loop
+    dec dx
+    jnz .row_loop
+    jmp .done
+
+.row_loop_fast:
+    mov cx, [bp-2]
+    shr cx, 1
+.word_loop_fast:
+    mov ax, [es:bx]
+    and ax, [si]
+    or  ax, [di]
+    mov [es:bx], ax
+    add bx, 2
+    add si, 2
+    add di, 2
+    dec cx
+    jnz .word_loop_fast
+
+.row_done_fast:
+    mov al, [bp-8]
+    test al, 1
+    jz .even_to_odd_fast
+    sub bx, 8112
+    sub bx, [bp-2]
+    jmp .next_line_fast
+.even_to_odd_fast:
+    add bx, 8192
+    sub bx, [bp-2]
+.next_line_fast:
+    xor byte [bp-8], 1
+    dec dx
+    jnz .row_loop_fast
 
 .done:
     mov ax,[bp-6]
@@ -474,6 +490,17 @@ init_sprites:
 
 .loop:
     push cx
+
+    ; Precompute sprite metadata once: bytes_per_row and picture pointer.
+    mov bx, [si+SPRITE_PTR]
+    mov ax, [bx]           ; width_pixels
+    shr ax, 1
+    shr ax, 1              ; bytes_per_row
+    mov [bx+4], ax
+    mul word [bx+2]        ; bytes_per_row * height
+    add ax, bx
+    add ax, 8              ; skip header to picture bytes
+    mov [bx+6], ax
 
     mov byte [si+SPRITE_COLLIDE], 0    ; clear collision flag
     ; Compute and cache the sprite's video buffer start address for faster drawing later. Also clear the collision flag byte.
@@ -687,13 +714,8 @@ clear_sprite:
     push di
 
     mov si, [bp+4]     ; sprite_ptr
-    mov ax, [si]       ; width_pixels
     mov cx, [si+2]     ; height_pixels (row count)
-    mov dx, ax
-    shr dx, 1
-    shr dx, 1          ; bytes_per_row
-    mov bx, dx         ; preserve bytes_per_row
-    mov dx, bx         ; bytes_per_row
+    mov dx, [si+4]     ; precomputed bytes_per_row
     mov ax, [bp+6]     ; y start
 
     ; Clip Y
@@ -730,12 +752,8 @@ clear_sprite:
 .row_loop:
     push cx
     mov cx, [bp-2]     ; draw_bytes
-    shr cx, 1          ; word count
+    shr cx, 1          ; word count (sprites assumed multiple of 8px in X)
     rep stosw
-
-    test byte [bp-2], 1
-    jz .row_done
-    stosb
 
 .row_done:
     ; Advance to next scanline start
@@ -1198,26 +1216,7 @@ sprites_list:
 
 align 2
 
-space_ship dw 16,8
-db 0FFh,0FFh,0FFh,0FFh
-db 0FFh,0FFh,0C3h,0FFh
-db 0FFh,0FFh,0F0h,03Fh
-db 0C0h,00h,0FFh,03h
-db 0FFh,0F0h,0Fh,03Fh
-db 0FFh,0C0h,00h,0FFh
-db 0FFh,0C0h,03h,0FFh
-db 0FFh,0FFh,0FFh,0FFh
-
-db 00h,00h,00h,00h
-db 00h,00h,03Ch,00h
-db 00h,00h,05h,040h
-db 035h,055h,00h,094h
-db 00h,06h,0A0h,040h
-db 00h,01Ah,0A9h,00h
-db 00h,015h,054h,00h
-db 00h,00h,00h,00h
-
-alien_ship dw 16,8
+alien_ship dw 16,8,0,0
 db 0FFh,0CFh,0FFh,03Fh
 db 0FFh,0F3h,0FCh,0FFh
 db 0FFh,00h,00h,0Fh
@@ -1235,8 +1234,25 @@ db 0Ah,09h,06h,0Ah
 db 02h,02h,058h,08h
 db 00h,080h,0A0h,020h
 db 00h,02Ah,0AAh,080h
+space_ship dw 16,8,0,0
+db 0FFh,0FFh,0FFh,0FFh
+db 0FFh,0FFh,0C3h,0FFh
+db 0FFh,0FFh,0F0h,03Fh
+db 0C0h,00h,0FFh,03h
+db 0FFh,0F0h,0Fh,03Fh
+db 0FFh,0C0h,00h,0FFh
+db 0FFh,0C0h,03h,0FFh
+db 0FFh,0FFh,0FFh,0FFh
 
-asteroid dw 8,8
+db 00h,00h,00h,00h
+db 00h,00h,03Ch,00h
+db 00h,00h,05h,040h
+db 035h,055h,00h,094h
+db 00h,06h,0A0h,040h
+db 00h,01Ah,0A9h,00h
+db 00h,015h,054h,00h
+db 00h,00h,00h,00h
+asteroid dw 8,8,0,0
 db 0FCh,0Fh
 db 0F3h,033h
 db 0CCh,0CCh
@@ -1254,3 +1270,93 @@ db 044h,011h
 db 010h,041h
 db 04h,014h
 db 01h,040h
+hatched_box dw 8,8,0,0
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,00h
+
+db 099h,099h
+db 066h,066h
+db 099h,099h
+db 066h,066h
+db 099h,099h
+db 066h,066h
+db 099h,099h
+db 066h,066h
+explode_1 dw 8,8,0,0
+db 0FFh,0FFh
+db 0FFh,0FFh
+db 0FFh,0FFh
+db 0FFh,03Fh
+db 0FCh,03Fh
+db 0FFh,0CFh
+db 0FFh,0FFh
+db 0FFh,0FFh
+
+db 00h,00h
+db 00h,00h
+db 00h,00h
+db 00h,040h
+db 01h,080h
+db 00h,010h
+db 00h,00h
+db 00h,00h
+explode_2 dw 8,8,0,0
+db 0FFh,0FFh
+db 0FCh,0CFh
+db 0F3h,03Fh
+db 0FCh,0CFh
+db 0CFh,0F3h
+db 0F3h,03Fh
+db 0FFh,0CFh
+db 0FFh,0FFh
+
+db 00h,00h
+db 01h,010h
+db 04h,080h
+db 02h,010h
+db 010h,04h
+db 04h,080h
+db 00h,010h
+db 00h,00h
+explode_3 dw 8,8,0,0
+db 0F3h,0CFh
+db 0CFh,033h
+db 0CCh,033h
+db 033h,033h
+db 0FFh,03Ch
+db 0F0h,0F3h
+db 0CFh,0C3h
+db 0FCh,0FFh
+
+db 04h,010h
+db 010h,084h
+db 022h,048h
+db 048h,0C4h
+db 00h,081h
+db 06h,0Ch
+db 010h,018h
+db 01h,00h
+explode_4 dw 8,8,0,0
+db 03Fh,0CFh
+db 0CCh,0F3h
+db 0FFh,03Ch
+db 033h,0CFh
+db 0CFh,033h
+db 0F3h,0CFh
+db 0CFh,03Ch
+db 0F3h,0FFh
+
+db 080h,030h
+db 023h,08h
+db 00h,0C2h
+db 084h,030h
+db 020h,048h
+db 0Ch,020h
+db 020h,082h
+db 08h,00h
