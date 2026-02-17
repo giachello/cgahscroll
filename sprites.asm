@@ -13,6 +13,8 @@ SPRITE_COLLIDE equ 12
 SPRITE_MOVE_MODE equ 13
 SPRITE_STRUCT_SIZE equ 14
 
+cosine_table_40 dw 150,	149,	148,	145,	140,	135,	129,	123,	115,	108,	100,	92,	85,	77,	71,	65,	60,	55,	52,	51,	50,	51,	52,	55,	60,	65,	71,	77,	85,	92,	100,	108,	115,	123,	129,	135,	140,	145,	148,	149
+
 sprites_list:
     dw space_ship
     dw 8            ; x
@@ -30,7 +32,7 @@ sprites_list:
     dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
-    db 1
+    db 1        ; movement mode: cosine40
 
     dw asteroid
     dw 200            ; x
@@ -157,8 +159,6 @@ sprites_list:
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
-
-cosine_table_40 dw 150,	149,	148,	145,	140,	135,	129,	123,	115,	108,	100,	92,	85,	77,	71,	65,	60,	55,	52,	51,	50,	51,	52,	55,	60,	65,	71,	77,	85,	92,	100,	108,	115,	123,	129,	135,	140,	145,	148,	149
 
 
 align 2

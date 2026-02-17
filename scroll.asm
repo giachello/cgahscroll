@@ -999,7 +999,7 @@ get_scancode:
     sti
     ret
 ; -----------------------------
-; INT 9h handler: read scancode, set flag, flush BIOS buffer
+; INT 9h handler: read scancode, set flag, store in our buffer
 int9_handler:
     push ax
     push bx
