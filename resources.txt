@@ -1,0 +1,13 @@
+
+
+Pit timer
+
+https://www.ecsdump.net/?page_id=338
+https://ekoharsono.wordpress.com/wp-content/uploads/2012/10/4-programmable-interval-timer.pdf
+https://www.tiij.org/issues/issues/spring2007/30_Jenkins/Jenkins-Programming%20the%208254%20PIT.pdf
+https://en.wikipedia.org/wiki/Intel_8253
+https://wiki.osdev.org/Programmable_Interval_Timer
+
+
+sound
+https://forum.vcfed.org/index.php?threads/pc-speaker-square-wave-sound-effects.56680/

@@ -2,13 +2,20 @@
 ; NASM .COM program
 ; Conventions: routines dont' save AX,BX,CX,DX, but do save SI,DI,BP,ES if used. Stack params are WORDs unless noted otherwise. Screen buffer is accessed via ES.
 
-CLOCK_TICKS EQU 19912 ; number of PIT ticks for ~1/18.2 second delay (for smooth scrolling)
+; CLOCK_TICKS EQU 19912 ; number of PIT ticks for ~1/59.94 Hz delay (for smooth scrolling)
+CLOCK_TICKS EQU 39824 ; number of PIT ticks for ~1/30s delay (for smooth scrolling)
 CGA_BASE EQU 0B800h
 
 [map all scroll.map]
 CPU 8086
 section .text align=16
 org 100h
+
+%macro set_cga_palette 3
+    mov al, ((%1 << 5) + (%2 << 4) + (%3 & 15))
+    mov dx, 03D9h
+    out dx, al
+%endmacro
 
 start:
     ; Set DS = CS
@@ -25,6 +32,7 @@ start:
     call install_int9 ; keyboard interrupt handler for non-blocking input
     call install_int1c ; timer tick handler for smooth scrolling (optional, can also just poll BIOS tick flag without chaining handler)
     mov ax, CLOCK_TICKS ; set clock to 59.94hz
+    call sync_vertical_retrace
     call set_pit_rate
 
     ; Seed RNG from BIOS timer tick
@@ -50,6 +58,9 @@ start:
 
     ; Scroll via CGA CRTC start address (infinite)
     mov word [start_addr], 0   ; start address in WORDS
+
+; ------------------------------------------------- MAIN LOOP
+
 scroll_loop:
     ; Wait for BIOS tick (INT 1Ch) to sync scrolling
 .wait_tick:
@@ -59,12 +70,11 @@ scroll_loop:
 .got_tick:
     inc word [ticks_elapsed]
     mov byte [tick_flag], 0
-    test [ticks_elapsed], 1
-    jnz scroll_loop   ; scroll every other tick
+;    test [ticks_elapsed], 1
+;    jnz scroll_loop   ; scroll every other tick
+;    call sync_vertical_retrace
 
-;    mov al, [sc_head]
-;    cmp al, [sc_tail]
-;    je scroll_loop
+    set_cga_palette 1,1,0
 
     ; Erase sprites at old positions
     call erase_sprites
@@ -182,6 +192,8 @@ scroll_loop:
 
     cmp byte [sprites_list+SPRITE_COLLIDE], 6
     je exit_to_dos
+
+    set_cga_palette 0,1,1
 
     jmp scroll_loop
 
@@ -403,14 +415,14 @@ fire_laser:
     mov ax, [sprites_list+SPRITE_X]
     add ax, [bx]       ; right edge = x + sprite width
     ; Keep 4-pixel boundary alignment without ever moving inside the ship.
-    add ax, 7
+    add ax, 3
     and ax, 0FFFCh     ; align up to next multiple of 4
     cmp ax, 316
     jae .done
     mov [laser_x], ax
 
     mov ax, [sprites_list+SPRITE_Y]
-    add ax, 14
+    add ax, 4
     cmp ax, 200
     jae .done
     mov [laser_y], ax
@@ -560,8 +572,7 @@ draw_sprite:
     mov ax, [bp+8]     ; y start
     and al, 1
     mov [bp-8], al
-    mov bx, [bp+12]    ; cached sprite start address in CGA buffer
-    add bx, [bp-4]     ; apply clipped x byte offset
+    mov bx, [bp+12]    ; cached sprite start address in CGA buffer (already includes x/4)
 
 .row_loop:
     mov cx, [bp-2]     ; draw_bytes
@@ -706,12 +717,15 @@ erase_sprites:
     mov si, sprites_list
 .loop:
     push cx
+    cmp byte [si+SPRITE_COLLIDE], 6 ; if sprite is fully exploded, skip erasing since it won't be drawn next frame either
+    jae .skip_erase
     push word [si+SPRITE_VBUF_ADDR]  ; cached start address
     push word [si+SPRITE_X]   ; x
     push word [si+SPRITE_Y]   ; y
     push word [si+SPRITE_PTR]       ; sprite ptr
     call clear_sprite
     add sp, 8
+.skip_erase:
     pop cx
     add si, SPRITE_STRUCT_SIZE
     loop .loop
@@ -739,32 +753,38 @@ update_sprites:
     je .state_done
     cmp al, 1
     je .to_explode_1
-    cmp al, 3
+    cmp al, 2
     je .to_explode_2
-    cmp al, 4
+    cmp al, 3
     je .to_explode_3
-    cmp al, 5
+    cmp al, 4
     je .to_explode_4
+    cmp al, 5
+    jae .to_explode_5
     jmp .state_done
 
 .to_explode_1:
     mov word [si+SPRITE_PTR], explode_1
-    mov byte [si+SPRITE_COLLIDE], 3
+    mov byte [si+SPRITE_COLLIDE], 2
     jmp .state_done
 
 .to_explode_2:
     mov word [si+SPRITE_PTR], explode_2
-    mov byte [si+SPRITE_COLLIDE], 4
+    mov byte [si+SPRITE_COLLIDE], 3
     jmp .state_done
 
 .to_explode_3:
     mov word [si+SPRITE_PTR], explode_3
-    mov byte [si+SPRITE_COLLIDE], 5
+    mov byte [si+SPRITE_COLLIDE], 4
     jmp .state_done
 
 .to_explode_4:
     mov word [si+SPRITE_PTR], explode_4
+    mov byte [si+SPRITE_COLLIDE], 5
+
+.to_explode_5: ; terminal situation, the sprite is now fully exploded and should be removed from the screen and ignored for collisions.
     mov byte [si+SPRITE_COLLIDE], 6
+    jmp .addr_done
 
 .state_done:
 
@@ -907,8 +927,7 @@ clear_sprite:
     mov ax, [bp+6]     ; y start
     mov dl, al
     and dl, 1
-    mov di, [bp+10]    ; cached sprite start address in CGA buffer
-    add di, [bp-4]     ; apply clipped x byte offset
+    mov di, [bp+10]    ; cached sprite start address in CGA buffer (already includes x/4)
 
     xor ax, ax
 .row_loop:
@@ -963,10 +982,10 @@ set_start_addr:
 ; Sync for the next vertical retrace start
 sync_vertical_retrace:
     mov dx, 03DAh
-.wait_no_retrace:
-    in al, dx
-    test al, 08h
-    jnz .wait_no_retrace
+;.wait_no_retrace:
+;    in al, dx
+;    test al, 08h
+;    jnz .wait_no_retrace
 .wait_retrace:
     in al, dx
     test al, 08h

@@ -37,8 +37,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 10            ; y
-    dw 4              ; vx
-    dw 1              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -46,8 +46,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 20            ; y
-    dw 4              ; vx
-    dw -1              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -55,8 +55,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 30            ; y
-    dw -4              ; vx
-    dw 2              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -64,8 +64,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 40            ; y
-    dw -4              ; vx
-    dw -2              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -82,8 +82,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 60            ; y
-    dw 4              ; vx
-    dw -4              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -118,8 +118,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 100            ; y
-    dw 4              ; vx
-    dw 2              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -145,8 +145,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 130            ; y
-    dw 8             ; vx
-    dw -8              ; vy
+    dw 0             ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
@@ -154,8 +154,8 @@ sprites_list:
     dw asteroid
     dw 200            ; x
     dw 140            ; y
-    dw 8              ; vx
-    dw 8              ; vy
+    dw 0              ; vx
+    dw 0              ; vy
     dw 0FFFFh       ; vbuf_addr
     db 0              ; collide
     db 0
