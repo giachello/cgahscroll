@@ -658,8 +658,9 @@ draw_sprite:
     ret
 
 ; Sprite list helpers
-; Entry layout (14 bytes):
-;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db pad
+; Entry layout (20 bytes):
+;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db move_mode
+;   dw scroll_delta_bytes, dw accum_x, dw accum_y
 init_sprites:
     push si
     mov cl, [sprites_count]
@@ -851,7 +852,7 @@ update_sprites:
 .addr_done:
 
     pop cx
-    add si, 14
+    add si, SPRITE_STRUCT_SIZE
     dec cx
     jnz .loop
     pop si
@@ -1239,4 +1240,4 @@ laser_x dw 0
 laser_y dw 0
 laser_active db 0
 
-%include "sprites.asm"
+%include "sprites_old.asm"
