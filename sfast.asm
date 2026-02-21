@@ -736,16 +736,18 @@ erase_sprites:
     pop si
     ret
 
+; ------------------------------
+; update sprite positions based on velocity, check for collisions, and update collision state. 
+; Also apply scroll delta (passed as the only stack parameter) to each sprite's accumulated 
+; scroll offset and apply that to the sprite's position if it exceeds a byte boundary 
+; (to keep the sprite visually locked to the scrolled background).
 update_sprites:
     push bp
     mov bp, sp
-    sub sp, 4 ; locals: [bp-2] = scroll delta, [bp-4] = old_y
     push di
     push si
 
     ; Input: [bp+4] = scroll-byte delta from erase phase to upcoming draw phase.
-    mov ax, [bp+4]
-    mov [bp-2], ax
 
     mov cl, [sprites_count]
     xor ch, ch
@@ -770,6 +772,7 @@ update_sprites:
     jmp .state_done
 
 .to_explode_1:
+; sprite collided. move to first explosion state and play sound.
     mov word [si+SPRITE_PTR], explode_1
     mov bx, [si+SPRITE_PTR]
     mov ax, [bx+4]
@@ -778,7 +781,7 @@ update_sprites:
     mov [si+SPRITE_HEIGHT], ax
     lea ax, [bx+6]
     mov [si+SPRITE_PIC_PTR], ax
-    mov byte [si+SPRITE_COLLIDE], 2
+    mov byte [si+SPRITE_COLLIDE], 2 ; advance to next explosion state. 
     play_sound sound_explosion
     jmp .state_done
 
@@ -817,7 +820,10 @@ update_sprites:
     mov [si+SPRITE_PIC_PTR], ax
     mov byte [si+SPRITE_COLLIDE], 5
 
-.to_explode_5: ; terminal situation, the sprite is now fully exploded and should be removed from the screen and ignored for collisions.
+.to_explode_5: 
+; terminal situation, the sprite is now fully exploded and should be removed from the screen 
+; and ignored for collisions. collide =6 means a last erase will happen. Then it will move to 
+; 7 (sprite inactive)
     mov byte [si+SPRITE_COLLIDE], 6
     jmp .addr_done
 
@@ -827,7 +833,6 @@ update_sprites:
     add ax, [si+SPRITE_VX]     ; vx
     mov [si+SPRITE_X], ax
     mov dx, [si+SPRITE_Y]     ; old y
-    mov [bp-4], dx
 
     ; If movement mode byte is 1, use vy as cosine-table index.
     cmp byte [si+SPRITE_MOVE_MODE], 1
@@ -898,7 +903,7 @@ update_sprites:
     add bx, cx
     mov ax, [start_addr]
     shl ax, 1
-    add ax, [bp-2]               ; next frame scroll base in bytes
+    add ax, [bp+4]               ; next frame scroll base in bytes
     add bx, ax
     mov ax, [si+SPRITE_X]
     shr ax, 1
@@ -917,7 +922,6 @@ update_sprites:
     jnz .loop
     pop si
     pop di
-    add sp, 4
     pop bp
     ret
 

@@ -355,3 +355,103 @@ db 02Bh,05Dh,011h,011h,011h,011h,01Fh,00h
 db 00h,0Dh,03Fh,0FDh,011h,015h,00h,00h
 db 00h,00h,0FFh,040h,00h,00h,00h,00h
 db 00h,01h,054h,00h,00h,00h,00h,00h
+
+numeral_0 dw 8,8,2
+db 03h,0F0h
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 03h,0F0h
+
+numeral_1 dw 8,8,2
+db 00h,0C0h
+db 00h,0C0h
+db 00h,0C0h
+db 00h,0C0h
+db 03h,0C0h
+db 00h,0C0h
+db 00h,0C0h
+db 0Fh,0FCh
+
+numeral_2 dw 8,8,2
+db 03h,0F0h
+db 00h,0Ch
+db 00h,0C0h
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 00h,030h
+db 03h,00h
+db 0Fh,0FCh
+
+numeral_3 dw 8,8,2
+db 03h,0F0h
+db 00h,0Ch
+db 00h,0F0h
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 00h,0F0h
+db 00h,0Ch
+db 03h,0F0h
+
+numeral_4 dw 8,8,2
+db 00h,030h
+db 03h,030h
+db 0Fh,0FCh
+db 00h,030h
+db 00h,0F0h
+db 0Ch,030h
+db 00h,030h
+db 00h,0FCh
+
+numeral_5 dw 8,8,2
+db 0Fh,0FCh
+db 0Ch,00h
+db 00h,0Ch
+db 0Ch,0Ch
+db 0Ch,00h
+db 0Fh,0F0h
+db 00h,0Ch
+db 0Fh,0F0h
+
+numeral_6 dw 8,8,2
+db 03h,0F0h
+db 0Ch,00h
+db 0Fh,0F0h
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,00h
+db 0Ch,0Ch
+db 03h,0F0h
+
+numeral_7 dw 8,8,2
+db 0Fh,0FCh
+db 00h,030h
+db 00h,0C0h
+db 03h,00h
+db 0Ch,0Ch
+db 00h,030h
+db 00h,0C0h
+db 03h,00h
+
+numeral_8 dw 8,8,2
+db 03h,0F0h
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 03h,0F0h
+db 0Ch,0Ch
+db 03h,0F0h
+
+numeral_9 dw 8,8,2
+db 03h,0F0h
+db 0Ch,0Ch
+db 00h,0Ch
+db 0Ch,0Ch
+db 0Ch,0Ch
+db 03h,0FCh
+db 00h,0Ch
+db 03h,0F0h
