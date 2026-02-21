@@ -5,6 +5,7 @@
 ; CLOCK_TICKS EQU 19912 ; number of PIT ticks for ~1/59.94 Hz delay (for smooth scrolling)
 CLOCK_TICKS EQU 39824 ; number of PIT ticks for ~1/30s delay (for smooth scrolling)
 CGA_BASE EQU 0B800h
+HSCROLL_STEP EQU 2
 
 [map all scroll.map]
 CPU 8086
@@ -15,6 +16,20 @@ org 100h
     mov al, ((%1 << 5) + (%2 << 4) + (%3 & 15))
     mov dx, 03D9h
     out dx, al
+%endmacro
+
+%macro play_sound 1
+    mov word [sound_ptr], %1
+    in al, 61h
+    or al, 03h
+    out 61h, al
+%endmacro
+
+%macro stop_sound 0
+    mov word [sound_ptr], 0
+    in al, 61h
+    and al, 0FCh
+    out 61h, al
 %endmacro
 
 start:
@@ -62,6 +77,8 @@ start:
 ; ------------------------------------------------- MAIN LOOP
 
 scroll_loop:
+;    call sync_vertical_retrace     ; wait for vertical retrace
+
     ; Wait for BIOS tick (INT 1Ch) to sync scrolling
 .wait_tick:
     cmp byte [tick_flag], 0
@@ -69,9 +86,6 @@ scroll_loop:
     jmp .wait_tick
 .got_tick:
     mov byte [tick_flag], 0
-;    test [ticks_elapsed], 1
-;    jnz scroll_loop   ; scroll every other tick
-;    call sync_vertical_retrace
 
     set_cga_palette 1,1,0
 
@@ -79,8 +93,20 @@ scroll_loop:
     call erase_sprites
     ; Erase laser at old position
     call erase_laser
+
+
+    test [ticks_elapsed], 3
+    jz .horizontal_frame_scroll   ; scroll every other tick
+    ; if frame doesn't scroll, then just update sprite positions and continue
+    xor ax, ax
+    push ax
+    call update_sprites
+    add sp, 2
+    jmp .continue_to_forward
+
+.horizontal_frame_scroll:
     ; Update sprite positions
-    mov ax, 2
+    mov ax, HSCROLL_STEP
     cmp word [start_addr], 39
     jne .have_update_scroll_delta
     mov ax, -78
@@ -88,6 +114,21 @@ scroll_loop:
     push ax
     call update_sprites
     add sp, 2
+
+    ; Advance scroll position (wrap every 40 words)
+    add word [start_addr], (HSCROLL_STEP>>1)  ; 40 words = 80 bytes = 1 scanline
+    cmp word [start_addr], 40
+    jb .set_scroll
+    mov word [start_addr], 0
+.set_scroll:
+    mov bx, [start_addr]
+    call set_start_addr
+
+    call next_mountain
+
+.continue_to_forward:
+
+
     ; Advance laser for this cycle
     call advance_laser
 
@@ -126,25 +167,16 @@ scroll_loop:
     jmp .continue
 .fire:
     call fire_laser
+    play_sound sound_laser
     jmp .continue
 
 .continue:
-    ; Advance scroll position (wrap every 40 words)
-    add word [start_addr], 1  ; 40 words = 80 bytes = 1 scanline
-    cmp word [start_addr], 40
-    jb .set_scroll
-    mov word [start_addr], 0
-.set_scroll:
-    mov bx, [start_addr]
-    call set_start_addr
 
     ; Draw laser before sprites so sprite redraw can collide with it.
     call draw_laser
 
     ; Redraw sprites at new positions (capture background then draw)
     call draw_sprites
-
-    call next_mountain
 
 %ifdef STEP_DEBUG
 .no_input:
@@ -167,6 +199,7 @@ exit_to_dos:
     xor ax, ax
     call set_pit_rate ; set clock back to 18.2hz
 
+    stop_sound
 
     ; Wait for key
     mov ah, 00h
@@ -639,7 +672,7 @@ init_sprites:
     mov [si+SPRITE_DRAW_BYTES], ax
     mov ax, [bx+2]                     ; height_pixels
     mov [si+SPRITE_HEIGHT], ax
-    mov ax, [bx+6]                     ; pic_ptr
+    lea ax, [bx+6]                     ; pic_ptr = sprite_ptr + 6
     mov [si+SPRITE_PIC_PTR], ax
 
     ; Compute and cache the sprite's video buffer start address for faster drawing later. Also clear the collision flag byte.
@@ -743,9 +776,10 @@ update_sprites:
     mov [si+SPRITE_DRAW_BYTES], ax
     mov ax, [bx+2]
     mov [si+SPRITE_HEIGHT], ax
-    mov ax, [bx+6]
+    lea ax, [bx+6]
     mov [si+SPRITE_PIC_PTR], ax
     mov byte [si+SPRITE_COLLIDE], 2
+    play_sound sound_explosion
     jmp .state_done
 
 .to_explode_2:
@@ -755,7 +789,7 @@ update_sprites:
     mov [si+SPRITE_DRAW_BYTES], ax
     mov ax, [bx+2]
     mov [si+SPRITE_HEIGHT], ax
-    mov ax, [bx+6]
+    lea ax, [bx+6]
     mov [si+SPRITE_PIC_PTR], ax
     mov byte [si+SPRITE_COLLIDE], 3
     jmp .state_done
@@ -767,7 +801,7 @@ update_sprites:
     mov [si+SPRITE_DRAW_BYTES], ax
     mov ax, [bx+2]
     mov [si+SPRITE_HEIGHT], ax
-    mov ax, [bx+6]
+    lea ax, [bx+6]
     mov [si+SPRITE_PIC_PTR], ax
     mov byte [si+SPRITE_COLLIDE], 4
     jmp .state_done
@@ -779,7 +813,7 @@ update_sprites:
     mov [si+SPRITE_DRAW_BYTES], ax
     mov ax, [bx+2]
     mov [si+SPRITE_HEIGHT], ax
-    mov ax, [bx+6]
+    lea ax, [bx+6]
     mov [si+SPRITE_PIC_PTR], ax
     mov byte [si+SPRITE_COLLIDE], 5
 
@@ -1207,8 +1241,47 @@ restore_int1c:
 ; -----------------------------
 ; INT 1Ch handler: set tick flag, chain old handler at ~18.2 Hz
 int1c_handler:
+    push si
+
     mov byte [cs:tick_flag], 1
     inc word [cs:ticks_elapsed]
+
+    mov si, [cs:sound_ptr]
+    or si, si
+    jz .check_tick_overflow
+
+    push ax
+    push bx
+
+    mov bx, [cs:si]
+    or bx, bx
+    jz .stop_sound
+
+    mov al, 0B6h
+    out 43h, al
+    mov al, bl
+    out 42h, al
+    mov al, bh
+    out 42h, al
+
+    add si, 2
+    mov [cs:sound_ptr], si
+    mov bx, [cs:si]
+    or bx, bx
+    jnz .after_sound
+
+.stop_sound:
+    mov word [cs:sound_ptr], 0
+    in al, 61h
+    and al, 0FCh
+    out 61h, al
+
+.after_sound:
+    pop bx
+    pop ax 
+
+.check_tick_overflow:
+    pop si
     add [cs:tick_acc], word CLOCK_TICKS
     jno .no_overflow
     jmp far [cs:old1c_off]
@@ -1250,3 +1323,4 @@ laser_y dw 0
 laser_active db 0
 
 %include "sprites.asm"
+%include "sounds.asm"
