@@ -17,7 +17,8 @@ SPRITE_ACCUM_Y equ 18
 SPRITE_DRAW_BYTES equ 20
 SPRITE_HEIGHT equ 22
 SPRITE_PIC_PTR equ 24
-SPRITE_STRUCT_SIZE equ 26
+SPRITE_X_BYTE equ 26
+SPRITE_STRUCT_SIZE equ 28
 
 cosine_table_40 dw 150,	149,	148,	145,	140,	135,	129,	123,	115,	108,	100,	92,	85,	77,	71,	65,	60,	55,	52,	51,	50,	51,	52,	55,	60,	65,	71,	77,	85,	92,	100,	108,	115,	123,	129,	135,	140,	145,	148,	149
 
@@ -36,6 +37,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw alien_ship
     dw 300            ; x
@@ -51,6 +53,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -66,6 +69,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -81,6 +85,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -96,6 +101,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -111,6 +117,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -126,6 +133,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -141,6 +149,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -156,6 +165,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -171,6 +181,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -186,6 +197,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -201,6 +213,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -216,6 +229,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -231,6 +245,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -246,6 +261,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
     dw asteroid
     dw 200            ; x
@@ -261,6 +277,7 @@ sprites_list:
     dw 0              ; cached draw bytes
     dw 0              ; cached height
     dw 0              ; cached pic ptr
+    dw 0              ; cached x byte (x/4)
 
 
 align 2

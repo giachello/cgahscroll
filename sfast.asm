@@ -160,10 +160,12 @@ scroll_loop:
 .left:
     sub word [sprites_list+2], 4
     dec word [sprites_list+10]
+    dec word [sprites_list+SPRITE_X_BYTE]
     jmp .continue
 .right:
     add word [sprites_list+2], 4
     inc word [sprites_list+10]
+    inc word [sprites_list+SPRITE_X_BYTE]
     jmp .continue
 .fire:
     call fire_laser
@@ -654,9 +656,10 @@ draw_sprite:
     ret
 
 ; Sprite list helpers
-; Entry layout (26 bytes):
+; Entry layout (28 bytes):
 ;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db move_mode
 ;   dw scroll_delta_bytes, dw accum_x, dw accum_y, dw draw_bytes, dw height, dw pic_ptr
+;   dw x_byte (x/4)
 init_sprites:
     push si
     mov cl, [sprites_count]
@@ -695,6 +698,7 @@ init_sprites:
     mov ax, [si+2]         ; x
     shr ax, 1
     shr ax, 1              ; x / 4
+    mov [si+SPRITE_X_BYTE], ax
     add bx, ax
     mov [si+SPRITE_VBUF_ADDR], bx        ; cached video-buffer start address
 
@@ -744,6 +748,7 @@ erase_sprites:
 update_sprites:
     push bp
     mov bp, sp
+    sub sp, 4 ; locals: [bp-2] = old_x_byte, [bp-4] = old_y
     push di
     push si
 
@@ -755,9 +760,9 @@ update_sprites:
 .loop:
     push cx
     mov al, [si+SPRITE_COLLIDE]
-    cmp al, 7
-    je .state_done
     cmp al, 0
+    je .state_done
+    cmp al, 7
     je .state_done
     cmp al, 1
     je .to_explode_1
@@ -772,67 +777,54 @@ update_sprites:
     jmp .state_done
 
 .to_explode_1:
-; sprite collided. move to first explosion state and play sound.
-    mov word [si+SPRITE_PTR], explode_1
-    mov bx, [si+SPRITE_PTR]
-    mov ax, [bx+4]
-    mov [si+SPRITE_DRAW_BYTES], ax
-    mov ax, [bx+2]
-    mov [si+SPRITE_HEIGHT], ax
-    lea ax, [bx+6]
-    mov [si+SPRITE_PIC_PTR], ax
-    mov byte [si+SPRITE_COLLIDE], 2 ; advance to next explosion state. 
     play_sound sound_explosion
-    jmp .state_done
+    mov bx, explode_1
+    mov dl, 2
+    jmp .set_explosion_sprite
 
 .to_explode_2:
-    mov word [si+SPRITE_PTR], explode_2
-    mov bx, [si+SPRITE_PTR]
-    mov ax, [bx+4]
-    mov [si+SPRITE_DRAW_BYTES], ax
-    mov ax, [bx+2]
-    mov [si+SPRITE_HEIGHT], ax
-    lea ax, [bx+6]
-    mov [si+SPRITE_PIC_PTR], ax
-    mov byte [si+SPRITE_COLLIDE], 3
-    jmp .state_done
+    mov bx, explode_2
+    mov dl, 3
+    jmp .set_explosion_sprite
 
 .to_explode_3:
-    mov word [si+SPRITE_PTR], explode_3
-    mov bx, [si+SPRITE_PTR]
-    mov ax, [bx+4]
-    mov [si+SPRITE_DRAW_BYTES], ax
-    mov ax, [bx+2]
-    mov [si+SPRITE_HEIGHT], ax
-    lea ax, [bx+6]
-    mov [si+SPRITE_PIC_PTR], ax
-    mov byte [si+SPRITE_COLLIDE], 4
-    jmp .state_done
+    mov bx, explode_3
+    mov dl, 4
+    jmp .set_explosion_sprite
 
 .to_explode_4:
-    mov word [si+SPRITE_PTR], explode_4
-    mov bx, [si+SPRITE_PTR]
-    mov ax, [bx+4]
-    mov [si+SPRITE_DRAW_BYTES], ax
-    mov ax, [bx+2]
-    mov [si+SPRITE_HEIGHT], ax
-    lea ax, [bx+6]
-    mov [si+SPRITE_PIC_PTR], ax
-    mov byte [si+SPRITE_COLLIDE], 5
+    mov bx, explode_4
+    mov dl, 5
+    jmp .set_explosion_sprite
 
 .to_explode_5: 
 ; terminal situation, the sprite is now fully exploded and should be removed from the screen 
-; and ignored for collisions. collide =6 means a last erase will happen. Then it will move to 
-; 7 (sprite inactive)
+; and ignored for collisions. collide = 5 means a last erase will happen. 6 is fully exploded 
+; and the sprite is inactive.
     mov byte [si+SPRITE_COLLIDE], 6
     jmp .addr_done
 
-.state_done:
+.set_explosion_sprite:
+    mov [si+SPRITE_PTR], bx
+    mov [si+SPRITE_COLLIDE], dl
+    mov ax, [bx+4]
+    mov [si+SPRITE_DRAW_BYTES], ax
+    mov ax, [bx+2]
+    mov [si+SPRITE_HEIGHT], ax
+    lea ax, [bx+6]
+    mov [si+SPRITE_PIC_PTR], ax
 
+.state_done:
+    mov ax, [si+SPRITE_X_BYTE]
+    mov [bp-2], ax
     mov ax, [si+SPRITE_X]     ; x
     add ax, [si+SPRITE_VX]     ; vx
     mov [si+SPRITE_X], ax
+    shr ax, 1
+    shr ax, 1
+    mov [si+SPRITE_X_BYTE], ax
     mov dx, [si+SPRITE_Y]     ; old y
+    mov [bp-4], dx
 
     ; If movement mode byte is 1, use vy as cosine-table index.
     cmp byte [si+SPRITE_MOVE_MODE], 1
@@ -856,7 +848,18 @@ update_sprites:
     mov [si+SPRITE_Y], di
 
 .y_updated:
+    ; Fast skip when x-byte, y, and scroll all stayed unchanged.
+    mov ax, [bp+4]
+    or ax, ax
+    jnz .needs_geo
+    mov ax, [si+SPRITE_X_BYTE]
+    cmp ax, [bp-2]
+    jne .needs_geo
+    cmp di, [bp-4]
+    jne .needs_geo
+    jmp .addr_done
 
+.needs_geo:
     ; Out-of-bounds check on full sprite rectangle.
     mov ax, [si+SPRITE_X]
     test ax, 8000h
@@ -875,41 +878,37 @@ update_sprites:
     cmp dx, 200
     ja .out_of_bounds
     cmp byte [si+SPRITE_COLLIDE], 7
-    jne .in_bounds
+    jne .incremental_vbuf
     mov byte [si+SPRITE_COLLIDE], 0
-.in_bounds:
-
-    ; Recompute cached video-buffer address from absolute x/y and upcoming scroll.
-    mov ax, di
-    test ax, 8000h
-    jnz .addr_done
-    cmp ax, 200
-    jae .addr_done
-
-    mov bx, ax
-    and bx, 1
-    mov cl, 13
-    shl bx, cl                   ; (y & 1) * 0x2000
-    shr ax, 1
-    mov dx, ax
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1
-    shl dx, 1                    ; (y >> 1) * 16
-    mov cx, dx
-    shl dx, 1
-    shl dx, 1                    ; (y >> 1) * 64
-    add cx, dx                   ; (y >> 1) * 80
-    add bx, cx
+    mov bx, di
+    shl bx, 1
+    mov bx, [y_base+bx]
     mov ax, [start_addr]
     shl ax, 1
-    add ax, [bp+4]               ; next frame scroll base in bytes
     add bx, ax
-    mov ax, [si+SPRITE_X]
-    shr ax, 1
-    shr ax, 1                    ; x / 4
-    add bx, ax
+    add bx, [bp+4]
+    add bx, [si+SPRITE_X_BYTE]
     mov [si+SPRITE_VBUF_ADDR], bx
+    jmp .addr_done
+
+.incremental_vbuf:
+    ; Incremental cached video-buffer update:
+    ;   + scroll delta
+    ;   + x-byte delta
+    ;   + (y_base[new_y] - y_base[old_y])
+    mov cx, [si+SPRITE_VBUF_ADDR]
+    add cx, [bp+4]
+    mov ax, [si+SPRITE_X_BYTE]
+    sub ax, [bp-2]
+    add cx, ax
+    mov bx, di
+    shl bx, 1
+    mov ax, [y_base+bx]
+    mov bx, [bp-4]
+    shl bx, 1
+    sub ax, [y_base+bx]
+    add cx, ax
+    mov [si+SPRITE_VBUF_ADDR], cx
     jmp .addr_done
 
 .out_of_bounds:
@@ -922,6 +921,7 @@ update_sprites:
     jnz .loop
     pop si
     pop di
+    add sp, 4
     pop bp
     ret
 
@@ -1325,6 +1325,17 @@ tick_acc dw 0
 laser_x dw 0
 laser_y dw 0
 laser_active db 0
+
+y_base:
+%assign __y 0
+%rep 200
+%if (__y & 1)
+    dw 8192 + ((__y-1)/2)*80
+%else
+    dw (__y/2)*80
+%endif
+%assign __y __y + 1
+%endrep
 
 %include "sprites.asm"
 %include "sounds.asm"
