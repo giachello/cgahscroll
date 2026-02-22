@@ -7,9 +7,12 @@ CLOCK_TICKS EQU 39824 ; number of PIT ticks for ~1/30s delay (for smooth scrolli
 CGA_BASE EQU 0B800h
 HSCROLL_STEP EQU 2
 PLAYER_SPRITE_INDEX EQU 31
+BOSS_SLOT_INDEX EQU 23
 HSIZE EQU 320
 VSIZE EQU 184
 MOUNTAIN_MAX_HEIGHT EQU 20
+ASTEROID_SPAWN_CYCLE_DELAY EQU 20
+ALIEN_WAVE_CYCLE_DELAY EQU 320
 
 LASER_Y_OFFSET EQU 8 ; where the laser fires relative to the top of the ship sprite
 
@@ -63,29 +66,8 @@ start:
     int 1Ah            ; CX:DX = ticks since midnight
     mov [seed], dx
     call show_title_screen
-
-    ; Initialize sprites (capture background + draw)
-    call init_sprites
-    mov byte [lives], 3
-    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X]
-    mov [player_spawn_x], ax
-    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y]
-    mov [player_spawn_y], ax
-
-    set_cga_palette 0,1,1
-
-    ; fill the top 2 scanlines (0,0)-(319,1) with color 2 to avoid a blank spce when scrolling wraps around
-    xor ax, ax
-    push ax
-    push ax
-    mov ax, HSIZE-1
-    push ax
-    mov ax, 1
-    push ax
-    mov ax, 2
-    push ax          ; color 0 = black
-    call fill_rect
-    add sp, 10
+    call seed_sprites_list_defaults
+    call start_new_game
 
 
 ; ------------------------------------------------- MAIN LOOP
@@ -111,9 +93,13 @@ scroll_loop:
     call erase_laser
 
 
+    cmp byte [boss_active], 0
+    jne .no_scroll_frame
+
     test [ticks_elapsed], 3
-    jz .horizontal_frame_scroll   ; scroll every other tick
+    jz .horizontal_frame_scroll   ; scroll every other 4th tick
     ; if frame doesn't scroll, then just update sprite positions and continue
+.no_scroll_frame:
     xor ax, ax
     push ax
     call update_sprites
@@ -144,11 +130,16 @@ scroll_loop:
 
 .continue_to_forward:
 
-    ; Spawn an alien wave: every 640 cycles, 8 ships at 10-cycle intervals.
+    ; Spawn/update wave and boss scheduler.
     call spawn_alien_wave
 
-    ; Spawn a new asteroid every 20 cycles using free gameplay slots (4..23).
+    ; Regular asteroid spawns are disabled from wave 4 onward.
+    cmp byte [alien_wave_count], 4
+    jae .skip_regular_spawns
+    cmp byte [boss_active], 0
+    jne .skip_regular_spawns
     call spawn_asteroid_every_20_cycles
+.skip_regular_spawns:
 
     ; Advance laser for this cycle
     call advance_laser
@@ -189,6 +180,10 @@ scroll_loop:
     inc word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X_BYTE]
     jmp .continue
 .fire:
+    cmp byte [player_respawn_delay], 0
+    jne .continue
+    cmp byte [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 6
+    je .continue
     call fire_laser
     play_sound sound_laser
     jmp .continue
@@ -209,10 +204,37 @@ scroll_loop:
 %endif
 
     cmp byte [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 6
-    jne .check_game_over
+    jne .boss_status_check
     cmp byte [lives], 0
     je exit_to_dos
+    cmp byte [player_respawn_delay], 0
+    je .do_respawn
+    dec byte [player_respawn_delay]
+    jmp .boss_status_check
+.do_respawn:
     call respawn_player
+
+    ; Boss resolution:
+    ; - collide=6: player killed boss => victory
+    ; - collide=7 or x<=0 while alive: boss reached left side => restart game
+.boss_status_check:
+    cmp byte [boss_active], 0
+    je .check_game_over
+    mov al, [sprites_list+BOSS_SLOT_INDEX*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE]
+    cmp al, 6
+    je .boss_victory
+    cmp al, 7
+    je .boss_failed
+    cmp al, 0
+    jne .check_game_over
+    cmp word [sprites_list+BOSS_SLOT_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X], 0
+    jg .check_game_over
+.boss_failed:
+    call start_new_game
+    jmp scroll_loop
+.boss_victory:
+    mov byte [victory_flag], 1
+    jmp exit_to_dos
 .check_game_over:
     cmp byte [lives], 0
     je exit_to_dos
@@ -231,13 +253,24 @@ exit_to_dos:
     call set_pit_rate ; set clock back to 18.2hz
 
     stop_sound
+    mov ah, 02h
+    xor bh, bh
+    mov dh, 12
+    mov dl, 16
+    int 10h
+    mov si, game_over_text
+    cmp byte [victory_flag], 0
+    je .print_end_text
+    mov si, victory_text
+.print_end_text:
+    call print_string
 
-    ; Wait for key
-    mov ah, 00h
+
+    mov ah, 00h     ; Wait for key
     int 16h
 
 
-    mov ax, 0003h
+    mov ax, 0003h ; restore text mode
     int 10h
     ret
 
@@ -288,147 +321,6 @@ next_mountain:
     push ax
     call fill_rect_8px_aligned
     add sp, 8
-    ret
-
-; -----------------------------
-; Fill rectangle (x1,y1)-(x2,y2) with color
-; Stack params (word): x1, y1, x2, y2, color. 
-fill_rect:
-    push bp
-    mov bp, sp
-    push si
-    push di
-
-    ; Build 4-pixel pattern byte from 2-bit color
-    mov al, [bp+4]
-    and al, 3
-    mov ah, al
-    mov cl, 2
-    shl ah, cl
-    or al, ah
-    mov ah, al
-    mov cl, 4
-    shl ah, cl
-    or al, ah
-    mov si, [bp+10]    ; y1
-.y_loop:
-    push ax             ; save ax which is used for color/pattern
-    ; Compute scanline base offset in BX
-    mov bx, si
-    mov ax, bx
-    and bx, 1
-    mov cl, 13
-    shl bx, cl         ; (y & 1) * 0x2000
-    shr ax, 1
-    mov dx, ax
-    mov cl, 6
-    shl dx, cl          ; (y >> 1) * 64
-    mov cl, 4
-    shl ax, cl          ; (y >> 1) * 16
-    add dx, ax         ; (y >> 1) * 80
-    add bx, dx         ; line base
-    ; Apply scroll offset so drawing matches displayed position
-    mov ax, [start_addr]
-    shl ax, 1          ; words -> bytes
-    add bx, ax
-    ; Byte offsets for start/end
-    mov ax, [bp+12]    ; x1
-    mov cl, 2
-    shr ax, cl          ; start byte
-    add ax, bx         ; start offset
-    mov di, ax
-    mov ax, [bp+8]     ; x2
-    mov cl, 2
-    shr ax, cl          ; end byte
-    add ax, bx         ; end offset
-    mov bx, ax
-    cmp di, bx
-    pop ax       ; restore color/pattern
-    je .single_byte
-
-    ; First (partial) byte: keep left pixels before x1
-    mov dx, [bp+12]    ; x1
-    and dl, 3
-    mov cl, 4
-    sub cl, dl
-    shl cl, 1
-    mov dl, 0FFh
-    shl dl, cl         ; keep-left mask
-    mov ah, [es:di]
-    and ah, dl
-    mov dh, dl
-    not dh             ; write mask
-    mov dl, al
-    and dl, dh
-    or ah, dl
-    mov [es:di], ah
-
-    ; Middle full bytes
-    inc di
-    cmp di, bx
-    jge .last_byte
-.mid_loop:
-    mov [es:di], al
-    inc di
-    cmp di, bx
-    jl .mid_loop
-
-.last_byte:
-    ; Last (partial) byte: keep right pixels after x2
-    mov dx, [bp+8]     ; x2
-    and dl, 3
-    mov cl, 3
-    sub cl, dl
-    shl cl, 1
-    mov dl, 1
-    shl dl, cl
-    dec dl             ; keep-right mask
-    mov ah, [es:bx]
-    and ah, dl
-    mov dh, dl
-    not dh             ; write mask
-    mov dl, al
-    and dl, dh
-    or ah, dl
-    mov [es:bx], ah
-    jmp .next_row
-
-.single_byte:
-    ; Single byte: keep left of x1 and right of x2
-    mov dx, [bp+12]    ; x1
-    and dl, 3
-    mov cl, 4
-    sub cl, dl
-    shl cl, 1
-    mov ah, 0FFh
-    shl ah, cl         ; keep-left mask (in AH)
-    mov dx, [bp+8]     ; x2
-    and dl, 3
-    mov cl, 3
-    sub cl, dl
-    shl cl, 1
-    mov dl, 1
-    shl dl, cl
-    dec dl             ; keep-right mask (in DL)
-    or dl, ah          ; combined keep mask (in DL)
-    mov ah, [es:di]
-    and ah, dl
-    mov dh, dl
-    not dh             ; write mask
-    mov dl, al
-    and dl, dh
-    or ah, dl
-    mov [es:di], ah
-
-.next_row:
-
-    inc si
-    cmp si, [bp+6]     ; y2
-    jbe .y_loop
-
-    pop di
-    pop si
-    pop bp
     ret
 
 ; -----------------------------
@@ -554,99 +446,83 @@ fire_laser:
     ret
 
 ; -----------------------------
-; Fill 8-pixel wide rectangle at aligned X with color.
-; Stack params (word): x, y1, y2, color.
-; Assumptions:
-; - width is fixed at 8 pixels (2 bytes in mode 4)
-; - x is aligned to an 8-pixel boundary
-fill_rect_8px_aligned:
-    push bp
-    mov bp, sp
+; Capture immutable startup sprite list into a working seed buffer.
+seed_sprites_list_defaults:
+    push si
+    push di
+    push cx
+    cld
+    mov si, sprites_list
+    mov di, sprites_list_seed
+    mov cx, (32*SPRITE_STRUCT_SIZE)/2
+    rep movsw
+    pop cx
+    pop di
+    pop si
+    ret
+
+; Reset all gameplay state and restart a fresh run.
+start_new_game:
+    push ax
+    push bx
+    push cx
     push si
     push di
 
-    ; Build 2-byte pattern word (both bytes hold the same 4-pixel pattern).
-    mov al, [bp+4]
-    and al, 3
-    mov ah, al
-    mov cl, 2
-    shl ah, cl
-    or al, ah
-    mov ah, al
-    mov cl, 4
-    shl ah, cl
-    or al, ah
-    mov ah, al
-    mov dx, ax         ; DX = repeated byte pattern word
+    stop_sound
+    call clear_screen
 
-    ; Precompute x byte offset (x / 4), valid because x is 8-pixel aligned.
-    mov di, [bp+10]
-    shr di, 1
-    shr di, 1
+    ; Restore sprite list defaults.
+    cld
+    mov si, sprites_list_seed
+    mov di, sprites_list
+    mov cx, (32*SPRITE_STRUCT_SIZE)/2
+    rep movsw
 
-    ; Compute starting video offset for (x, y1), including scroll.
-    ; Use y_base lookup to avoid recomputing CGA row addressing math.
-    mov bx, [bp+8]     ; y1
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1          ; words -> bytes
-    add bx, ax
-    add bx, di
+    mov word [start_addr], 0
+    mov bx, [start_addr]
+    call set_start_addr
 
-    ; total_rows = (y2 - y1 + 1)
-    mov cx, [bp+6]
-    sub cx, [bp+8]
-    inc cx
-    mov si, cx
-    push bx                    ; save y1 base for second pass
+    mov word [score], 0
+    mov byte [lives], 3
+    mov byte [player_respawn_delay], 0
+    mov byte [asteroid_spawn_counter], 0
+    mov byte [alien_wave_remaining], 0
+    mov byte [alien_wave_gap_counter], 0
+    mov word [alien_wave_cycle_counter], 0
+    mov byte [alien_wave_count], 0
+    mov byte [boss_spawn_delay], 0
+    mov byte [boss_active], 0
+    mov byte [victory_flag], 0
 
-    ; Pass 1: y1, y1+2, y1+4, ...
-    mov ax, cx
-    inc ax
-    shr ax, 1                  ; ceil(total_rows/2)
-    mov cx, ax
-.first_rows_loop:
-    mov [es:bx], dx
-    add bx, 80                 ; same parity next row
-    loop .first_rows_loop
+    call init_sprites
+    call update_score_display
 
-    ; Pass 2: y1+1, y1+3, y1+5, ...
-    pop bx
-    mov cx, si
-    shr cx, 1                  ; floor(total_rows/2)
-    jcxz .rows_done
-    cmp bx, 2000h
-    jb .second_from_even
-    sub bx, 8112               ; odd plane -> next even row
-    jmp .second_rows_loop
-.second_from_even:
-    add bx, 8192               ; even plane -> next odd row
-.second_rows_loop:
-    mov [es:bx], dx
-    add bx, 80                 ; same parity next row
-    loop .second_rows_loop
-.rows_done:
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X]
+    mov [player_spawn_x], ax
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y]
+    mov [player_spawn_y], ax
 
-    pop di
-    pop si
-    pop bp
-    ret
+    set_cga_palette 0,1,1
 
-; -----------------------------
-; clear screen
-clear_screen:
+    ; Fill the top 2 scanlines for wrap-around visuals.
     xor ax, ax
     push ax
     push ax
     mov ax, HSIZE-1
     push ax
-    mov ax, 199
+    mov ax, 1
     push ax
-    xor ax, ax
+    mov ax, 2
     push ax
     call fill_rect
     add sp, 10
+
+    pop di
+    pop si
+    pop cx
+    pop bx
+    pop ax
     ret
 
 ; -----------------------------
@@ -706,24 +582,6 @@ show_title_screen:
     pop si
     pop dx
     pop cx
-    pop bx
-    pop ax
-    ret
-
-; Print ASCIIZ string at DS:SI using BIOS teletype.
-print_string:
-    push ax
-    push bx
-.next_char:
-    lodsb
-    or al, al
-    jz .done
-    mov ah, 0Eh
-    xor bh, bh
-    mov bl, 15
-    int 10h
-    jmp .next_char
-.done:
     pop bx
     pop ax
     ret
@@ -973,16 +831,13 @@ update_sprites:
     cmp al, 1
     je .hide_life_29
     mov byte [sprites_list+28*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
-    jmp .mark_player_dead
+    jmp .no_score_add
 .hide_life_30:
     mov byte [sprites_list+30*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
-    jmp .mark_player_dead
+    jmp .no_score_add
 .hide_life_29:
     mov byte [sprites_list+29*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
-
-.mark_player_dead:
-    mov byte [si+SPRITE_COLLIDE], 6
-    jmp .addr_done
+    jmp .no_score_add
 
 .player_no_lives:
     mov byte [si+SPRITE_COLLIDE], 6
@@ -1007,6 +862,10 @@ update_sprites:
 ; terminal situation, the sprite is now fully exploded and should be removed from the screen 
 ; and ignored for collisions. collide = 5 means a last erase will happen. 6 is fully exploded 
 ; and the sprite is inactive.
+    cmp si, sprites_list + PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE
+    jne .set_explode_done
+    mov byte [player_respawn_delay], 40
+.set_explode_done:
     mov byte [si+SPRITE_COLLIDE], 6
 .to_explode_7:
     jmp .addr_done
@@ -1218,7 +1077,7 @@ set_sprite_bitmap_and_cache:
 ; Spawn one asteroid every 20 cycles in a free slot from 4..23.
 spawn_asteroid_every_20_cycles:
     inc byte [asteroid_spawn_counter]
-    cmp byte [asteroid_spawn_counter], 20
+    cmp byte [asteroid_spawn_counter], ASTEROID_SPAWN_CYCLE_DELAY
     jb .done
     mov byte [asteroid_spawn_counter], 0
 
@@ -1272,14 +1131,31 @@ spawn_asteroid_every_20_cycles:
 ; - Start a new wave every 640 cycles.
 ; - Each wave spawns 8 ships.
 ; - Ships spawn every 10 cycles at the same start point.
+; - After wave 4 completes, wait 200 cycles then spawn boss.
 spawn_alien_wave:
+    cmp byte [boss_active], 0
+    jne .done
+
+    ; After wave 4 is fully spawned, wait 100 cycles then spawn boss.
+    cmp byte [boss_spawn_delay], 0
+    je .no_boss_countdown
+    dec byte [boss_spawn_delay]
+    jnz .done
+    call spawn_boss
+    jmp .done
+
+.no_boss_countdown:
     cmp byte [alien_wave_remaining], 0
     jne .wave_active
 
+    cmp byte [alien_wave_count], 4
+    jae .done
+
     inc word [alien_wave_cycle_counter]
-    cmp word [alien_wave_cycle_counter], 640
+    cmp word [alien_wave_cycle_counter], ALIEN_WAVE_CYCLE_DELAY
     jb .done
     mov word [alien_wave_cycle_counter], 0
+    inc byte [alien_wave_count]
     mov byte [alien_wave_remaining], 8
     mov byte [alien_wave_gap_counter], 0
 
@@ -1331,8 +1207,56 @@ spawn_alien_wave:
 
     dec byte [alien_wave_remaining]
     mov byte [alien_wave_gap_counter], 10
+    cmp byte [alien_wave_remaining], 0
+    jne .done
+    cmp byte [alien_wave_count], 4
+    jne .done
+    mov byte [boss_spawn_delay], 200
 
 .done:
+    ret
+
+spawn_boss:
+    push si
+    push di
+    push ax
+    push bx
+
+    mov si, sprites_list + BOSS_SLOT_INDEX*SPRITE_STRUCT_SIZE
+    mov di, boss_ship
+    call set_sprite_bitmap_and_cache
+
+    mov ax, HSIZE-32
+    mov [si+SPRITE_X], ax
+    shr ax, 1
+    shr ax, 1
+    mov [si+SPRITE_X_BYTE], ax
+
+    mov word [si+SPRITE_Y], 140
+    mov word [si+SPRITE_VX], -2
+    mov word [si+SPRITE_VY], 3
+    mov byte [si+SPRITE_MOVE_MODE], 1
+    mov word [si+SPRITE_POINTS], 1000
+    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
+    mov word [si+SPRITE_ACCUM_X], 0
+    mov word [si+SPRITE_ACCUM_Y], 0
+
+    mov bx, [si+SPRITE_Y]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    add bx, [si+SPRITE_X_BYTE]
+    mov [si+SPRITE_VBUF_ADDR], bx
+    mov byte [si+SPRITE_COLLIDE], 0
+
+    mov byte [boss_active], 1
+
+    pop bx
+    pop ax
+    pop di
+    pop si
     ret
 
 ; Respawn sprite 31 at saved spawn position and reactivate it.
@@ -1749,7 +1673,7 @@ int1c_handler:
 .no_overflow:
     iret
 
-
+%include "graphics.asm"
 
 section .data align=16
 
@@ -1765,6 +1689,8 @@ color db 0
 title_dummy_collide db 0
 title_line_1 db "(C) THX 2026",0
 title_line_2 db "PRESS SPACE TO PLAY",0
+game_over_text db "GAME OVER",0
+victory_text db "VICTORY",0
 
 ; ----------------------------- Keyboard buffer (ring of 16 bytes)
 sc_head        db 0
@@ -1784,10 +1710,15 @@ old1c_seg dw 0
 tick_acc dw 0
 score dw 0
 lives db 3
+player_respawn_delay db 0
 asteroid_spawn_counter db 0
 alien_wave_remaining db 0
 alien_wave_gap_counter db 0
 alien_wave_cycle_counter dw 0
+alien_wave_count db 0
+boss_spawn_delay db 0
+boss_active db 0
+victory_flag db 0
 player_spawn_x dw 64
 player_spawn_y dw 64
 numeral_ptrs dw numeral_0, numeral_1, numeral_2, numeral_3, numeral_4, numeral_5, numeral_6, numeral_7, numeral_8, numeral_9
@@ -1812,3 +1743,5 @@ y_base:
 
 %include "sprites.asm"
 %include "sounds.asm"
+
+sprites_list_seed times (32*SPRITE_STRUCT_SIZE) db 0

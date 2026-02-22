@@ -1,0 +1,265 @@
+; graphics.asm 
+; Graphics routines
+
+; print_string
+; fill_rect
+; fill_rect_8px_aligned
+; clear_screen
+
+; ------------------------------
+; Print ASCIIZ string at DS:SI using BIOS teletype.
+print_string:
+    push ax
+    push bx
+.next_char:
+    lodsb
+    or al, al
+    jz .done
+    mov ah, 0Eh
+    xor bh, bh
+    mov bl, 15
+    int 10h
+    jmp .next_char
+.done:
+    pop bx
+    pop ax
+    ret
+
+
+; -----------------------------
+; Fill rectangle (x1,y1)-(x2,y2) with color
+; Stack params (word): x1, y1, x2, y2, color. 
+fill_rect:
+    push bp
+    mov bp, sp
+    push si
+    push di
+
+    ; Build 4-pixel pattern byte from 2-bit color
+    mov al, [bp+4]
+    and al, 3
+    mov ah, al
+    mov cl, 2
+    shl ah, cl
+    or al, ah
+    mov ah, al
+    mov cl, 4
+    shl ah, cl
+    or al, ah
+    mov si, [bp+10]    ; y1
+.y_loop:
+    push ax             ; save ax which is used for color/pattern
+    ; Compute scanline base offset in BX
+    mov bx, si
+    mov ax, bx
+    and bx, 1
+    mov cl, 13
+    shl bx, cl         ; (y & 1) * 0x2000
+    shr ax, 1
+    mov dx, ax
+    mov cl, 6
+    shl dx, cl          ; (y >> 1) * 64
+    mov cl, 4
+    shl ax, cl          ; (y >> 1) * 16
+    add dx, ax         ; (y >> 1) * 80
+    add bx, dx         ; line base
+    ; Apply scroll offset so drawing matches displayed position
+    mov ax, [start_addr]
+    shl ax, 1          ; words -> bytes
+    add bx, ax
+    ; Byte offsets for start/end
+    mov ax, [bp+12]    ; x1
+    mov cl, 2
+    shr ax, cl          ; start byte
+    add ax, bx         ; start offset
+    mov di, ax
+    mov ax, [bp+8]     ; x2
+    mov cl, 2
+    shr ax, cl          ; end byte
+    add ax, bx         ; end offset
+    mov bx, ax
+    cmp di, bx
+    pop ax       ; restore color/pattern
+    je .single_byte
+
+    ; First (partial) byte: keep left pixels before x1
+    mov dx, [bp+12]    ; x1
+    and dl, 3
+    mov cl, 4
+    sub cl, dl
+    shl cl, 1
+    mov dl, 0FFh
+    shl dl, cl         ; keep-left mask
+    mov ah, [es:di]
+    and ah, dl
+    mov dh, dl
+    not dh             ; write mask
+    mov dl, al
+    and dl, dh
+    or ah, dl
+    mov [es:di], ah
+
+    ; Middle full bytes
+    inc di
+    cmp di, bx
+    jge .last_byte
+.mid_loop:
+    mov [es:di], al
+    inc di
+    cmp di, bx
+    jl .mid_loop
+
+.last_byte:
+    ; Last (partial) byte: keep right pixels after x2
+    mov dx, [bp+8]     ; x2
+    and dl, 3
+    mov cl, 3
+    sub cl, dl
+    shl cl, 1
+    mov dl, 1
+    shl dl, cl
+    dec dl             ; keep-right mask
+    mov ah, [es:bx]
+    and ah, dl
+    mov dh, dl
+    not dh             ; write mask
+    mov dl, al
+    and dl, dh
+    or ah, dl
+    mov [es:bx], ah
+    jmp .next_row
+
+.single_byte:
+    ; Single byte: keep left of x1 and right of x2
+    mov dx, [bp+12]    ; x1
+    and dl, 3
+    mov cl, 4
+    sub cl, dl
+    shl cl, 1
+    mov ah, 0FFh
+    shl ah, cl         ; keep-left mask (in AH)
+    mov dx, [bp+8]     ; x2
+    and dl, 3
+    mov cl, 3
+    sub cl, dl
+    shl cl, 1
+    mov dl, 1
+    shl dl, cl
+    dec dl             ; keep-right mask (in DL)
+    or dl, ah          ; combined keep mask (in DL)
+    mov ah, [es:di]
+    and ah, dl
+    mov dh, dl
+    not dh             ; write mask
+    mov dl, al
+    and dl, dh
+    or ah, dl
+    mov [es:di], ah
+
+.next_row:
+
+    inc si
+    cmp si, [bp+6]     ; y2
+    jbe .y_loop
+
+    pop di
+    pop si
+    pop bp
+    ret
+
+
+; -----------------------------
+; Fill 8-pixel wide rectangle at aligned X with color.
+; Stack params (word): x, y1, y2, color.
+; Assumptions:
+; - width is fixed at 8 pixels (2 bytes in mode 4)
+; - x is aligned to an 8-pixel boundary
+fill_rect_8px_aligned:
+    push bp
+    mov bp, sp
+    push si
+    push di
+
+    ; Build 2-byte pattern word (both bytes hold the same 4-pixel pattern).
+    mov al, [bp+4]
+    and al, 3
+    mov ah, al
+    mov cl, 2
+    shl ah, cl
+    or al, ah
+    mov ah, al
+    mov cl, 4
+    shl ah, cl
+    or al, ah
+    mov ah, al
+    mov dx, ax         ; DX = repeated byte pattern word
+
+    ; Precompute x byte offset (x / 4), valid because x is 8-pixel aligned.
+    mov di, [bp+10]
+    shr di, 1
+    shr di, 1
+
+    ; Compute starting video offset for (x, y1), including scroll.
+    ; Use y_base lookup to avoid recomputing CGA row addressing math.
+    mov bx, [bp+8]     ; y1
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1          ; words -> bytes
+    add bx, ax
+    add bx, di
+
+    ; total_rows = (y2 - y1 + 1)
+    mov cx, [bp+6]
+    sub cx, [bp+8]
+    inc cx
+    mov si, cx
+    push bx                    ; save y1 base for second pass
+
+    ; Pass 1: y1, y1+2, y1+4, ...
+    mov ax, cx
+    inc ax
+    shr ax, 1                  ; ceil(total_rows/2)
+    mov cx, ax
+.first_rows_loop:
+    mov [es:bx], dx
+    add bx, 80                 ; same parity next row
+    loop .first_rows_loop
+
+    ; Pass 2: y1+1, y1+3, y1+5, ...
+    pop bx
+    mov cx, si
+    shr cx, 1                  ; floor(total_rows/2)
+    jcxz .rows_done
+    cmp bx, 2000h
+    jb .second_from_even
+    sub bx, 8112               ; odd plane -> next even row
+    jmp .second_rows_loop
+.second_from_even:
+    add bx, 8192               ; even plane -> next odd row
+.second_rows_loop:
+    mov [es:bx], dx
+    add bx, 80                 ; same parity next row
+    loop .second_rows_loop
+.rows_done:
+
+    pop di
+    pop si
+    pop bp
+    ret
+
+; -----------------------------
+; clear screen
+clear_screen:
+    xor ax, ax
+    push ax
+    push ax
+    mov ax, HSIZE-1
+    push ax
+    mov ax, 199
+    push ax
+    xor ax, ax
+    push ax
+    call fill_rect
+    add sp, 10
+    ret
