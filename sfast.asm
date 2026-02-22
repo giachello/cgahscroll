@@ -6,6 +6,12 @@
 CLOCK_TICKS EQU 39824 ; number of PIT ticks for ~1/30s delay (for smooth scrolling)
 CGA_BASE EQU 0B800h
 HSCROLL_STEP EQU 2
+PLAYER_SPRITE_INDEX EQU 31
+HSIZE EQU 320
+VSIZE EQU 184
+MOUNTAIN_MAX_HEIGHT EQU 20
+
+LASER_Y_OFFSET EQU 8 ; where the laser fires relative to the top of the ship sprite
 
 [map all scroll.map]
 CPU 8086
@@ -43,26 +49,36 @@ start:
     ; Switch to CGA 320x200 4-color mode (mode 4)
     mov ax, 0004h
     int 10h
+    set_cga_palette 0,1,0
 
     call install_int9 ; keyboard interrupt handler for non-blocking input
     call install_int1c ; timer tick handler for smooth scrolling (optional, can also just poll BIOS tick flag without chaining handler)
     mov ax, CLOCK_TICKS ; set clock to 59.94hz
     call sync_vertical_retrace
     call set_pit_rate
+    mov word [start_addr], 0   ; start address in WORDS
 
     ; Seed RNG from BIOS timer tick
     mov ah, 00h
     int 1Ah            ; CX:DX = ticks since midnight
     mov [seed], dx
+    call show_title_screen
 
     ; Initialize sprites (capture background + draw)
     call init_sprites
+    mov byte [lives], 3
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X]
+    mov [player_spawn_x], ax
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y]
+    mov [player_spawn_y], ax
+
+    set_cga_palette 0,1,1
 
     ; fill the top 2 scanlines (0,0)-(319,1) with color 2 to avoid a blank spce when scrolling wraps around
     xor ax, ax
     push ax
     push ax
-    mov ax, 319
+    mov ax, HSIZE-1
     push ax
     mov ax, 1
     push ax
@@ -71,11 +87,9 @@ start:
     call fill_rect
     add sp, 10
 
-    ; Scroll via CGA CRTC start address (infinite)
-    mov word [start_addr], 0   ; start address in WORDS
 
 ; ------------------------------------------------- MAIN LOOP
-
+; Scroll via CGA CRTC start address (infinite)
 scroll_loop:
 ;    call sync_vertical_retrace     ; wait for vertical retrace
 
@@ -87,7 +101,9 @@ scroll_loop:
 .got_tick:
     mov byte [tick_flag], 0
 
+%ifdef DEBUG
     set_cga_palette 1,1,0
+%endif
 
     ; Erase sprites at old positions
     call erase_sprites
@@ -128,6 +144,11 @@ scroll_loop:
 
 .continue_to_forward:
 
+    ; Spawn an alien wave: every 640 cycles, 8 ships at 10-cycle intervals.
+    call spawn_alien_wave
+
+    ; Spawn a new asteroid every 20 cycles using free gameplay slots (4..23).
+    call spawn_asteroid_every_20_cycles
 
     ; Advance laser for this cycle
     call advance_laser
@@ -150,22 +171,22 @@ scroll_loop:
     jmp .continue
 
 .up:
-    sub word [sprites_list+4], 4
-    sub word [sprites_list+10], 160
+    sub word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y], 4
+    sub word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_VBUF_ADDR], 160
     jmp .continue
 .down:
-    add word [sprites_list+4], 4
-    add word [sprites_list+10], 160
+    add word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y], 4
+    add word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_VBUF_ADDR], 160
     jmp .continue
 .left:
-    sub word [sprites_list+2], 4
-    dec word [sprites_list+10]
-    dec word [sprites_list+SPRITE_X_BYTE]
+    sub word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X], 4
+    dec word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_VBUF_ADDR]
+    dec word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X_BYTE]
     jmp .continue
 .right:
-    add word [sprites_list+2], 4
-    inc word [sprites_list+10]
-    inc word [sprites_list+SPRITE_X_BYTE]
+    add word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X], 4
+    inc word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_VBUF_ADDR]
+    inc word [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X_BYTE]
     jmp .continue
 .fire:
     call fire_laser
@@ -187,10 +208,18 @@ scroll_loop:
     jz .no_input
 %endif
 
-    cmp byte [sprites_list+SPRITE_COLLIDE], 6
+    cmp byte [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 6
+    jne .check_game_over
+    cmp byte [lives], 0
+    je exit_to_dos
+    call respawn_player
+.check_game_over:
+    cmp byte [lives], 0
     je exit_to_dos
 
+%ifdef DEBUG
     set_cga_palette 0,1,1
+%endif
 
     jmp scroll_loop
 
@@ -216,11 +245,11 @@ exit_to_dos:
 ; draw the next mountain column on the right edge. Mountains are 20 pixels tall and drawn in color 2.
 next_mountain:
     ; Delete the last 8 columns of the screen
-    mov ax, 312
+    mov ax, HSIZE-8
     push ax
     xor ax, ax
     push ax
-    mov ax, 199
+    mov ax, VSIZE-1
     push ax
     xor ax, ax
     push ax          ; color 0 = black
@@ -228,13 +257,13 @@ next_mountain:
     add sp, 8
 
     ; Draw a random-height box at x=312..319 from y=0
-    mov ax, 312
+    mov ax, HSIZE-8
     push ax
     xor ax, ax
     push ax
     call rand16
     xor dx, dx
-    mov bx, 20
+    mov bx, MOUNTAIN_MAX_HEIGHT
     div bx             ; DX = 0..199
     push dx
     mov ax, 2
@@ -243,17 +272,17 @@ next_mountain:
     add sp, 8
 
     ; draw a random-height box at x=312..319 from the bottom up
-    mov ax, 312
+    mov ax, HSIZE-8
     push ax
     call rand16
     xor dx, dx
-    mov bx, 20
+    mov bx, MOUNTAIN_MAX_HEIGHT
     div bx             ; DX = 0..199
     neg dx
-    add dx,199
+    add dx,VSIZE-1
     push dx
 
-    mov ax, 199
+    mov ax, VSIZE-1
     push ax
     mov ax, 2
     push ax
@@ -403,77 +432,124 @@ fill_rect:
     ret
 
 ; -----------------------------
-; Laser: 4-pixel white horizontal dash, x aligned to 4.
-; Uses screen-space coordinates in laser_x/laser_y.
+; Laser: up to 4 independent 8-pixel white dashes, x aligned to 4.
 erase_laser:
-    cmp byte [laser_active], 0
-    je .done
-    mov ax, [laser_x]
-    push ax
-    mov ax, [laser_y]
-    push ax
-    mov ax, [laser_x]
-    add ax, 3
-    push ax
-    mov ax, [laser_y]
-    push ax
+    push si
+    push di
+    mov cx, 4
+    xor si, si
+.loop:
+    cmp byte [laser_active_arr+si], 0
+    je .next
+    mov di, si
+    shl di, 1
+    mov bx, [laser_y_arr+di]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    mov ax, [laser_x_arr+di]
+    shr ax, 1
+    shr ax, 1                    ; x / 4
+    add bx, ax
     xor ax, ax
-    push ax
-    call fill_rect
-    add sp, 10
+    mov [es:bx], ax              ; clear 8 pixels (2 bytes)
+.next:
+    inc si
+    loop .loop
+    pop di
+    pop si
 .done:
     ret
 
 advance_laser:
-    cmp byte [laser_active], 0
-    je .done
-    mov ax, [laser_x]
+    push si
+    push di
+    mov cx, 4
+    xor si, si
+.loop:
+    cmp byte [laser_active_arr+si], 0
+    je .next
+    mov di, si
+    shl di, 1
+    mov ax, [laser_x_arr+di]
     add ax, 12
-    mov [laser_x], ax
-    ; 4-pixel dash occupies x..x+3, so x=316 touches the right edge.
-    cmp ax, 316
-    jb .done
-    mov byte [laser_active], 0
+    mov [laser_x_arr+di], ax
+    ; 8-pixel dash occupies x..x+7.
+    cmp ax, HSIZE-8
+    jb .next
+    mov byte [laser_active_arr+si], 0
+.next:
+    inc si
+    loop .loop
+    pop di
+    pop si
 .done:
     ret
 
 draw_laser:
-    cmp byte [laser_active], 0
-    je .done
-    mov ax, [laser_x]
-    push ax
-    mov ax, [laser_y]
-    push ax
-    mov ax, [laser_x]
-    add ax, 3
-    push ax
-    mov ax, [laser_y]
-    push ax
-    mov ax, 3          ; white
-    push ax
-    call fill_rect
-    add sp, 10
+    push si
+    push di
+    mov cx, 4
+    xor si, si
+.loop:
+    cmp byte [laser_active_arr+si], 0
+    je .next
+    mov di, si
+    shl di, 1
+    mov bx, [laser_y_arr+di]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    mov ax, [laser_x_arr+di]
+    shr ax, 1
+    shr ax, 1                    ; x / 4
+    add bx, ax
+    mov ax, 0FFFFh
+    mov [es:bx], ax              ; draw 8 white pixels (2 bytes)
+.next:
+    inc si
+    loop .loop
+    pop di
+    pop si
 .done:
     ret
 
 fire_laser:
-    ; Launch from 4 pixels right of sprite 0, 4 pixels below sprite top.
-    mov bx, [sprites_list+SPRITE_PTR]
-    mov ax, [sprites_list+SPRITE_X]
+    ; Launch from 4 pixels right of the player sprite, 4 pixels below sprite top.
+    ; Uses round-robin slot replacement across 4 independent beams.
+    mov bx, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_PTR]
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_X]
     add ax, [bx]       ; right edge = x + sprite width
     ; Keep 4-pixel boundary alignment without ever moving inside the ship.
     add ax, 3
     and ax, 0FFFCh     ; align up to next multiple of 4
-    cmp ax, 316
+    cmp ax, HSIZE-8
     jae .done
-    mov [laser_x], ax
+    mov cx, ax
 
-    mov ax, [sprites_list+SPRITE_Y]
-    add ax, 4
-    cmp ax, 200
+    mov ax, [sprites_list+PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE+SPRITE_Y]
+    add ax, LASER_Y_OFFSET
+    cmp ax, VSIZE-1
     jae .done
-    mov [laser_y], ax
-    mov byte [laser_active], 1
+    mov dx, ax
+
+    xor bx, bx
+    mov bl, [laser_next_slot]
+    mov al, bl
+    inc byte [laser_next_slot]
+    and byte [laser_next_slot], 3
+
+    shl bx, 1
+    mov [laser_x_arr+bx], cx
+    mov [laser_y_arr+bx], dx
+
+    xor bx, bx
+    mov bl, al
+    mov byte [laser_active_arr+bx], 1
 .done:
     ret
 
@@ -509,55 +585,147 @@ fill_rect_8px_aligned:
     shr di, 1
 
     ; Compute starting video offset for (x, y1), including scroll.
-    mov ax, [bp+8]     ; y1
-    mov bx, ax
-    and bx, 1
-    mov cl, 13
-    shl bx, cl         ; (y & 1) * 0x2000
-    shr ax, 1          ; y >> 1
-    mov cx, ax
-    mov ax, cx
-    shl ax, 1
-    shl ax, 1
-    shl ax, 1
-    shl ax, 1          ; (y >> 1) * 16
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1
-    shl cx, 1          ; (y >> 1) * 64
-    add ax, cx         ; (y >> 1) * 80
-    add bx, ax
+    ; Use y_base lookup to avoid recomputing CGA row addressing math.
+    mov bx, [bp+8]     ; y1
+    shl bx, 1
+    mov bx, [y_base+bx]
     mov ax, [start_addr]
     shl ax, 1          ; words -> bytes
     add bx, ax
     add bx, di
 
-    ; Loop count = (y2 - y1 + 1)
+    ; total_rows = (y2 - y1 + 1)
     mov cx, [bp+6]
     sub cx, [bp+8]
     inc cx
+    mov si, cx
+    push bx                    ; save y1 base for second pass
 
-    ; Track line parity to step through CGA's even/odd interleaved planes quickly.
-    mov al, [bp+8]
-    and al, 1
-
-.row_loop:
+    ; Pass 1: y1, y1+2, y1+4, ...
+    mov ax, cx
+    inc ax
+    shr ax, 1                  ; ceil(total_rows/2)
+    mov cx, ax
+.first_rows_loop:
     mov [es:bx], dx
-    test al, 1
-    jz .even_to_odd
-    sub bx, 8112       ; odd -> next even row
-    jmp .next_row
-.even_to_odd:
-    add bx, 8192       ; even -> next odd row
-.next_row:
-    xor al, 1
-    loop .row_loop
+    add bx, 80                 ; same parity next row
+    loop .first_rows_loop
+
+    ; Pass 2: y1+1, y1+3, y1+5, ...
+    pop bx
+    mov cx, si
+    shr cx, 1                  ; floor(total_rows/2)
+    jcxz .rows_done
+    cmp bx, 2000h
+    jb .second_from_even
+    sub bx, 8112               ; odd plane -> next even row
+    jmp .second_rows_loop
+.second_from_even:
+    add bx, 8192               ; even plane -> next odd row
+.second_rows_loop:
+    mov [es:bx], dx
+    add bx, 80                 ; same parity next row
+    loop .second_rows_loop
+.rows_done:
 
     pop di
     pop si
     pop bp
+    ret
+
+; -----------------------------
+; clear screen
+clear_screen:
+    xor ax, ax
+    push ax
+    push ax
+    mov ax, HSIZE-1
+    push ax
+    mov ax, 199
+    push ax
+    xor ax, ax
+    push ax
+    call fill_rect
+    add sp, 10
+    ret
+
+; -----------------------------
+; Title screen: draw title sprite, play melody, print captions, wait for key.
+show_title_screen:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; Clear screen
+    call clear_screen
+
+    ; Draw title_screen sprite at x=80, y=50.
+    mov byte [title_dummy_collide], 0
+    mov bx, title_dummy_collide
+    mov si, title_screen+6
+    mov di, 2020                 ; y_base[50] + (80/4) = 2000 + 20
+    mov cx, 100
+    mov dx, 40
+    mov ax, 0
+    call draw_sprite
+
+    play_sound melody
+
+    ; Print "(C) THX 2026"
+    mov ah, 02h
+    xor bh, bh
+    mov dh, 20
+    mov dl, 13
+    int 10h
+    mov si, title_line_1
+    call print_string
+
+    ; Print "PRESS SPACE TO PLAY"
+    mov ah, 02h
+    xor bh, bh
+    mov dh, 22
+    mov dl, 10
+    int 10h
+    mov si, title_line_2
+    call print_string
+
+.wait_key:
+    call get_scancode
+    cmp al, 39h            ; space (continue)
+    jne .wait_key
+
+    stop_sound
+    mov byte [sc_head], 0
+    mov byte [sc_tail], 0
+    call clear_screen
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; Print ASCIIZ string at DS:SI using BIOS teletype.
+print_string:
+    push ax
+    push bx
+.next_char:
+    lodsb
+    or al, al
+    jz .done
+    mov ah, 0Eh
+    xor bh, bh
+    mov bl, 15
+    int 10h
+    jmp .next_char
+.done:
+    pop bx
+    pop ax
     ret
 
 ; -----------------------------
@@ -656,10 +824,10 @@ draw_sprite:
     ret
 
 ; Sprite list helpers
-; Entry layout (28 bytes):
+; Entry layout (30 bytes):
 ;   dw sprite_ptr, dw x, dw y, dw vx, dw vy, dw vbuf_addr, db collide_flag, db move_mode
 ;   dw scroll_delta_bytes, dw accum_x, dw accum_y, dw draw_bytes, dw height, dw pic_ptr
-;   dw x_byte (x/4)
+;   dw x_byte (x/4), dw points
 init_sprites:
     push si
     mov cl, [sprites_count]
@@ -669,7 +837,6 @@ init_sprites:
 .loop:
     push cx
 
-    mov byte [si+SPRITE_COLLIDE], 0    ; clear collision flag
     mov bx, [si+SPRITE_PTR]
     mov ax, [bx+4]                     ; bytes_per_row
     mov [si+SPRITE_DRAW_BYTES], ax
@@ -678,7 +845,7 @@ init_sprites:
     lea ax, [bx+6]                     ; pic_ptr = sprite_ptr + 6
     mov [si+SPRITE_PIC_PTR], ax
 
-    ; Compute and cache the sprite's video buffer start address for faster drawing later. Also clear the collision flag byte.
+    ; Compute and cache the sprite's video buffer start address for faster drawing later.
     mov ax, [si+SPRITE_Y]         ; y
     mov bx, ax
     and bx, 1
@@ -702,6 +869,10 @@ init_sprites:
     add bx, ax
     mov [si+SPRITE_VBUF_ADDR], bx        ; cached video-buffer start address
 
+    ; Draw only active sprites at init time.
+    cmp byte [si+SPRITE_COLLIDE], 6
+    jae .skip_init_draw
+
     ; Now draw the sprite (register ABI).
     push si
     lea bx, [si+SPRITE_COLLIDE]
@@ -713,6 +884,7 @@ init_sprites:
     mov si, [si+SPRITE_PIC_PTR]
     call draw_sprite
     pop si
+.skip_init_draw:
 
     pop cx
     add si, SPRITE_STRUCT_SIZE
@@ -762,8 +934,8 @@ update_sprites:
     mov al, [si+SPRITE_COLLIDE]
     cmp al, 0
     je .state_done
-    cmp al, 7
-    je .state_done
+    cmp al, 6
+    jae .addr_done
     cmp al, 1
     je .to_explode_1
     cmp al, 2
@@ -777,10 +949,44 @@ update_sprites:
     jmp .state_done
 
 .to_explode_1:
+    cmp si, sprites_list + PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE
+    je .player_hit
+    mov ax, [si+SPRITE_POINTS]
+    or ax, ax
+    jz .no_score_add
+    add [score], ax
+    call update_score_display
+.no_score_add:
     play_sound sound_explosion
     mov bx, explode_1
     mov dl, 2
     jmp .set_explosion_sprite
+
+.player_hit:
+    cmp byte [lives], 0
+    je .player_no_lives
+
+    dec byte [lives]
+    mov al, [lives]
+    cmp al, 2
+    je .hide_life_30
+    cmp al, 1
+    je .hide_life_29
+    mov byte [sprites_list+28*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
+    jmp .mark_player_dead
+.hide_life_30:
+    mov byte [sprites_list+30*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
+    jmp .mark_player_dead
+.hide_life_29:
+    mov byte [sprites_list+29*SPRITE_STRUCT_SIZE+SPRITE_COLLIDE], 7
+
+.mark_player_dead:
+    mov byte [si+SPRITE_COLLIDE], 6
+    jmp .addr_done
+
+.player_no_lives:
+    mov byte [si+SPRITE_COLLIDE], 6
+    jmp .addr_done
 
 .to_explode_2:
     mov bx, explode_2
@@ -802,6 +1008,7 @@ update_sprites:
 ; and ignored for collisions. collide = 5 means a last erase will happen. 6 is fully exploded 
 ; and the sprite is inactive.
     mov byte [si+SPRITE_COLLIDE], 6
+.to_explode_7:
     jmp .addr_done
 
 .set_explosion_sprite:
@@ -923,6 +1130,255 @@ update_sprites:
     pop di
     add sp, 4
     pop bp
+    ret
+
+; -----------------------------
+; Update score digits shown by sprites 24..27.
+; sprite 24 = thousands, 25 = hundreds, 26 = tens, 27 = ones
+update_score_display:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    mov ax, [score]
+    mov bx, 10
+
+    ; ones -> sprite 27
+    xor dx, dx
+    div bx
+    mov cx, ax
+    mov si, sprites_list + 27*SPRITE_STRUCT_SIZE
+    mov ax, dx
+    shl ax, 1
+    xchg ax, bx
+    mov di, [numeral_ptrs+bx]
+    xchg ax, bx
+    call set_sprite_bitmap_and_cache
+    mov ax, cx
+
+    ; tens -> sprite 26
+    xor dx, dx
+    div bx
+    mov cx, ax
+    mov si, sprites_list + 26*SPRITE_STRUCT_SIZE
+    mov ax, dx
+    shl ax, 1
+    xchg ax, bx
+    mov di, [numeral_ptrs+bx]
+    xchg ax, bx
+    call set_sprite_bitmap_and_cache
+    mov ax, cx
+
+    ; hundreds -> sprite 25
+    xor dx, dx
+    div bx
+    mov cx, ax
+    mov si, sprites_list + 25*SPRITE_STRUCT_SIZE
+    mov ax, dx
+    shl ax, 1
+    xchg ax, bx
+    mov di, [numeral_ptrs+bx]
+    xchg ax, bx
+    call set_sprite_bitmap_and_cache
+    mov ax, cx
+
+    ; thousands -> sprite 24
+    xor dx, dx
+    div bx
+    mov si, sprites_list + 24*SPRITE_STRUCT_SIZE
+    mov ax, dx
+    shl ax, 1
+    xchg ax, bx
+    mov di, [numeral_ptrs+bx]
+    xchg ax, bx
+    call set_sprite_bitmap_and_cache
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; SI = sprite entry, DI = new sprite bitmap pointer
+set_sprite_bitmap_and_cache:
+    mov [si+SPRITE_PTR], di
+    mov ax, [di+4]
+    mov [si+SPRITE_DRAW_BYTES], ax
+    mov ax, [di+2]
+    mov [si+SPRITE_HEIGHT], ax
+    lea ax, [di+6]
+    mov [si+SPRITE_PIC_PTR], ax
+    ret
+
+; Spawn one asteroid every 20 cycles in a free slot from 4..23.
+spawn_asteroid_every_20_cycles:
+    inc byte [asteroid_spawn_counter]
+    cmp byte [asteroid_spawn_counter], 20
+    jb .done
+    mov byte [asteroid_spawn_counter], 0
+
+    mov si, sprites_list + 4*SPRITE_STRUCT_SIZE
+    mov cx, 20
+.find_free_slot:
+    cmp byte [si+SPRITE_COLLIDE], 6
+    jae .spawn_here
+    add si, SPRITE_STRUCT_SIZE
+    loop .find_free_slot
+    jmp .done
+
+.spawn_here:
+    mov di, asteroid
+    call set_sprite_bitmap_and_cache
+
+    mov ax, HSIZE-8
+    mov [si+SPRITE_X], ax
+    shr ax, 1
+    shr ax, 1
+    mov [si+SPRITE_X_BYTE], ax
+
+    call rand16
+    xor dx, dx
+    mov bx, VSIZE-8
+    div bx                    ; DX = 0..(VSIZE-9)
+    mov [si+SPRITE_Y], dx
+
+    mov word [si+SPRITE_VX], -1
+    mov word [si+SPRITE_VY], 0
+    mov byte [si+SPRITE_MOVE_MODE], 0
+    mov word [si+SPRITE_POINTS], 10
+    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
+    mov word [si+SPRITE_ACCUM_X], 0
+    mov word [si+SPRITE_ACCUM_Y], 0
+
+    mov bx, [si+SPRITE_Y]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    add bx, [si+SPRITE_X_BYTE]
+    mov [si+SPRITE_VBUF_ADDR], bx
+    mov byte [si+SPRITE_COLLIDE], 0
+
+.done:
+    ret
+
+; Spawn alien waves:
+; - Start a new wave every 640 cycles.
+; - Each wave spawns 8 ships.
+; - Ships spawn every 10 cycles at the same start point.
+spawn_alien_wave:
+    cmp byte [alien_wave_remaining], 0
+    jne .wave_active
+
+    inc word [alien_wave_cycle_counter]
+    cmp word [alien_wave_cycle_counter], 640
+    jb .done
+    mov word [alien_wave_cycle_counter], 0
+    mov byte [alien_wave_remaining], 8
+    mov byte [alien_wave_gap_counter], 0
+
+.wave_active:
+    cmp byte [alien_wave_gap_counter], 0
+    je .try_spawn
+    dec byte [alien_wave_gap_counter]
+    jmp .done
+
+.try_spawn:
+    mov si, sprites_list
+    mov cx, 24
+.find_free_slot:
+    cmp byte [si+SPRITE_COLLIDE], 6
+    jae .spawn_here
+    add si, SPRITE_STRUCT_SIZE
+    loop .find_free_slot
+    jmp .done
+
+.spawn_here:
+    mov di, alien_ship
+    call set_sprite_bitmap_and_cache
+
+    ; Right-edge in-bounds spawn (alien width is 16).
+    mov ax, HSIZE-16
+    mov [si+SPRITE_X], ax
+    shr ax, 1
+    shr ax, 1
+    mov [si+SPRITE_X_BYTE], ax
+
+    mov word [si+SPRITE_Y], 140
+    mov word [si+SPRITE_VX], -2
+    mov word [si+SPRITE_VY], 3      ; cosine index so next step starts near y=140
+    mov byte [si+SPRITE_MOVE_MODE], 1
+    mov word [si+SPRITE_POINTS], 100
+    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
+    mov word [si+SPRITE_ACCUM_X], 0
+    mov word [si+SPRITE_ACCUM_Y], 0
+
+    mov bx, [si+SPRITE_Y]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    add bx, [si+SPRITE_X_BYTE]
+    mov [si+SPRITE_VBUF_ADDR], bx
+    mov byte [si+SPRITE_COLLIDE], 0
+
+    dec byte [alien_wave_remaining]
+    mov byte [alien_wave_gap_counter], 10
+
+.done:
+    ret
+
+; Respawn sprite 31 at saved spawn position and reactivate it.
+respawn_player:
+    push ax
+    push bx
+    push si
+    push di
+
+    mov si, sprites_list + PLAYER_SPRITE_INDEX*SPRITE_STRUCT_SIZE
+    mov di, big_space_ship
+    call set_sprite_bitmap_and_cache
+
+    mov ax, [player_spawn_x]
+    mov [si+SPRITE_X], ax
+    shr ax, 1
+    shr ax, 1
+    mov [si+SPRITE_X_BYTE], ax
+
+    mov ax, [player_spawn_y]
+    mov [si+SPRITE_Y], ax
+
+    mov word [si+SPRITE_VX], 0
+    mov word [si+SPRITE_VY], 0
+    mov byte [si+SPRITE_MOVE_MODE], 0
+    mov word [si+SPRITE_POINTS], 0
+    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
+    mov word [si+SPRITE_ACCUM_X], 0
+    mov word [si+SPRITE_ACCUM_Y], 0
+
+    mov bx, [si+SPRITE_Y]
+    shl bx, 1
+    mov bx, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add bx, ax
+    add bx, [si+SPRITE_X_BYTE]
+    mov [si+SPRITE_VBUF_ADDR], bx
+
+    mov byte [si+SPRITE_COLLIDE], 0
+    play_sound melody
+
+    pop di
+    pop si
+    pop bx
+    pop ax
     ret
 
 draw_sprites:
@@ -1244,6 +1700,7 @@ restore_int1c:
 
 ; -----------------------------
 ; INT 1Ch handler: set tick flag, chain old handler at ~18.2 Hz
+; This routine also plays sound effects.
 int1c_handler:
     push si
 
@@ -1305,6 +1762,9 @@ y2    dw 0
 w     dw 0
 h     dw 0
 color db 0
+title_dummy_collide db 0
+title_line_1 db "(C) THX 2026",0
+title_line_2 db "PRESS SPACE TO PLAY",0
 
 ; ----------------------------- Keyboard buffer (ring of 16 bytes)
 sc_head        db 0
@@ -1322,10 +1782,23 @@ tick_flag db 0
 old1c_off dw 0
 old1c_seg dw 0
 tick_acc dw 0
-laser_x dw 0
-laser_y dw 0
-laser_active db 0
+score dw 0
+lives db 3
+asteroid_spawn_counter db 0
+alien_wave_remaining db 0
+alien_wave_gap_counter db 0
+alien_wave_cycle_counter dw 0
+player_spawn_x dw 64
+player_spawn_y dw 64
+numeral_ptrs dw numeral_0, numeral_1, numeral_2, numeral_3, numeral_4, numeral_5, numeral_6, numeral_7, numeral_8, numeral_9
 
+; ------------------------------ Laser state (4 independent beams)
+laser_x_arr dw 0, 0, 0, 0
+laser_y_arr dw 0, 0, 0, 0
+laser_active_arr db 0, 0, 0, 0
+laser_next_slot db 0
+
+; ------------------------------ Precomputed Y offsets for CGA mode 4 row addressing math
 y_base:
 %assign __y 0
 %rep 200

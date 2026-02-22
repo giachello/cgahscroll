@@ -11,3 +11,10 @@ https://wiki.osdev.org/Programmable_Interval_Timer
 
 sound
 https://forum.vcfed.org/index.php?threads/pc-speaker-square-wave-sound-effects.56680/
+https://www.chibiakumas.com/8086/platform.php
+
+
+
+other
+https://www.os2museum.com/wp/undocumented-8086-opcodes-part-i/
+https://hwiegman.home.xs4all.nl/gw-man/PLAY.html
