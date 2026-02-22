@@ -4,6 +4,9 @@ This is a demo game that's entirely vibecoded with OpenAI's Codex 5.2.
 
 It is written for the IBM PC in 8086 assembly language and requires nasm to assemble into a .COM file. The .COM can be run on emulators like 86Box and on original hardware with a CGA card and some EGA/VGA that are hardware compatible with it.
 
+<img width="955" height="720" alt="Screenshot 2026-02-21 at 23 06 50" src="https://github.com/user-attachments/assets/74aae0bd-9701-455c-bd58-21db654898c6" />
+<img width="959" height="724" alt="Screenshot 2026-02-21 at 23 08 34" src="https://github.com/user-attachments/assets/d7838a28-8829-4e23-918d-7a2672342b8d" />
+
 ## Context
 I've always wanted to code a hardware-assisted CGA shooter game, since I was a kid. The idea is something like Gradius. That type of game only became popular with gaming consoles and EGA/VGA on PC's in the late-80s. I wanted to see if it is possible to run it on a 1981 IBM PC. 
 
