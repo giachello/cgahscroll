@@ -12,12 +12,12 @@ I've always wanted to code a hardware-assisted CGA shooter game. The idea is som
 
 However, the work required to get anything working was just too long, so I abandoned it after a half-hearted attempt a few years ago.
 
-Enter codex and vibecoding.
+Enter OpenAI Codex and vibe coding. I wrote this in a few hours while watching TV.
 
 ## What is this
 This is a horizontal scroll videogame. A space ship flys into a cavern. It avoids things (aliens, asteroids) and can destroy them using a laser beam. 
 
-The only way to do this on a IBM PC (which has a memory mapped video card, no graphics acceleration and just 500K-1M memory access instructions per second) is to use assembly and hardware tricks. Everything is vibecoded using VSCode and Codex, including the art and music using ChatGPT.
+The only way to do this on a IBM PC (which has a memory mapped video card, no graphics acceleration and just 300-400K memory access instructions per second) is to use assembly and hardware tricks. Everything is vibecoded using VSCode and Codex, including the art and music using ChatGPT.
 
 
 ## Why are you doing this?
