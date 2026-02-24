@@ -13,7 +13,7 @@ VSIZE EQU 184
 MOUNTAIN_MAX_HEIGHT EQU 20
 ASTEROID_SPAWN_CYCLE_DELAY EQU 20
 ALIEN_WAVE_CYCLE_DELAY EQU 320
-
+ 
 LASER_Y_OFFSET EQU 8 ; where the laser fires relative to the top of the ship sprite
 
 [map all scroll.map]
@@ -130,16 +130,8 @@ scroll_loop:
 
 .continue_to_forward:
 
-    ; Spawn/update wave and boss scheduler.
-    call spawn_alien_wave
-
-    ; Regular asteroid spawns are disabled from wave 4 onward.
-    cmp byte [alien_wave_count], 4
-    jae .skip_regular_spawns
-    cmp byte [boss_active], 0
-    jne .skip_regular_spawns
-    call spawn_asteroid_every_20_cycles
-.skip_regular_spawns:
+    ; Spawn/update runbook scheduler.
+    call runbook_tick
 
     ; Advance laser for this cycle
     call advance_laser
@@ -486,13 +478,7 @@ start_new_game:
     mov word [score], 0
     mov byte [lives], 3
     mov byte [player_respawn_delay], 0
-    mov byte [asteroid_spawn_counter], 0
-    mov byte [alien_wave_remaining], 0
-    mov byte [alien_wave_gap_counter], 0
-    mov word [alien_wave_cycle_counter], 0
-    mov byte [alien_wave_count], 0
-    mov byte [boss_spawn_delay], 0
-    mov byte [boss_active], 0
+    call runbook_reset
     mov byte [victory_flag], 0
 
     call init_sprites
@@ -1074,190 +1060,6 @@ set_sprite_bitmap_and_cache:
     mov [si+SPRITE_PIC_PTR], ax
     ret
 
-; Spawn one asteroid every 20 cycles in a free slot from 4..23.
-spawn_asteroid_every_20_cycles:
-    inc byte [asteroid_spawn_counter]
-    cmp byte [asteroid_spawn_counter], ASTEROID_SPAWN_CYCLE_DELAY
-    jb .done
-    mov byte [asteroid_spawn_counter], 0
-
-    mov si, sprites_list + 4*SPRITE_STRUCT_SIZE
-    mov cx, 20
-.find_free_slot:
-    cmp byte [si+SPRITE_COLLIDE], 6
-    jae .spawn_here
-    add si, SPRITE_STRUCT_SIZE
-    loop .find_free_slot
-    jmp .done
-
-.spawn_here:
-    mov di, asteroid
-    call set_sprite_bitmap_and_cache
-
-    mov ax, HSIZE-8
-    mov [si+SPRITE_X], ax
-    shr ax, 1
-    shr ax, 1
-    mov [si+SPRITE_X_BYTE], ax
-
-    call rand16
-    xor dx, dx
-    mov bx, VSIZE-8
-    div bx                    ; DX = 0..(VSIZE-9)
-    mov [si+SPRITE_Y], dx
-
-    mov word [si+SPRITE_VX], -1
-    mov word [si+SPRITE_VY], 0
-    mov byte [si+SPRITE_MOVE_MODE], 0
-    mov word [si+SPRITE_POINTS], 10
-    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
-    mov word [si+SPRITE_ACCUM_X], 0
-    mov word [si+SPRITE_ACCUM_Y], 0
-
-    mov bx, [si+SPRITE_Y]
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1
-    add bx, ax
-    add bx, [si+SPRITE_X_BYTE]
-    mov [si+SPRITE_VBUF_ADDR], bx
-    mov byte [si+SPRITE_COLLIDE], 0
-
-.done:
-    ret
-
-; Spawn alien waves:
-; - Start a new wave every 640 cycles.
-; - Each wave spawns 8 ships.
-; - Ships spawn every 10 cycles at the same start point.
-; - After wave 4 completes, wait 200 cycles then spawn boss.
-spawn_alien_wave:
-    cmp byte [boss_active], 0
-    jne .done
-
-    ; After wave 4 is fully spawned, wait 100 cycles then spawn boss.
-    cmp byte [boss_spawn_delay], 0
-    je .no_boss_countdown
-    dec byte [boss_spawn_delay]
-    jnz .done
-    call spawn_boss
-    jmp .done
-
-.no_boss_countdown:
-    cmp byte [alien_wave_remaining], 0
-    jne .wave_active
-
-    cmp byte [alien_wave_count], 4
-    jae .done
-
-    inc word [alien_wave_cycle_counter]
-    cmp word [alien_wave_cycle_counter], ALIEN_WAVE_CYCLE_DELAY
-    jb .done
-    mov word [alien_wave_cycle_counter], 0
-    inc byte [alien_wave_count]
-    mov byte [alien_wave_remaining], 8
-    mov byte [alien_wave_gap_counter], 0
-
-.wave_active:
-    cmp byte [alien_wave_gap_counter], 0
-    je .try_spawn
-    dec byte [alien_wave_gap_counter]
-    jmp .done
-
-.try_spawn:
-    mov si, sprites_list
-    mov cx, 24
-.find_free_slot:
-    cmp byte [si+SPRITE_COLLIDE], 6
-    jae .spawn_here
-    add si, SPRITE_STRUCT_SIZE
-    loop .find_free_slot
-    jmp .done
-
-.spawn_here:
-    mov di, alien_ship
-    call set_sprite_bitmap_and_cache
-
-    ; Right-edge in-bounds spawn (alien width is 16).
-    mov ax, HSIZE-16
-    mov [si+SPRITE_X], ax
-    shr ax, 1
-    shr ax, 1
-    mov [si+SPRITE_X_BYTE], ax
-
-    mov word [si+SPRITE_Y], 140
-    mov word [si+SPRITE_VX], -2
-    mov word [si+SPRITE_VY], 3      ; cosine index so next step starts near y=140
-    mov byte [si+SPRITE_MOVE_MODE], 1
-    mov word [si+SPRITE_POINTS], 100
-    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
-    mov word [si+SPRITE_ACCUM_X], 0
-    mov word [si+SPRITE_ACCUM_Y], 0
-
-    mov bx, [si+SPRITE_Y]
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1
-    add bx, ax
-    add bx, [si+SPRITE_X_BYTE]
-    mov [si+SPRITE_VBUF_ADDR], bx
-    mov byte [si+SPRITE_COLLIDE], 0
-
-    dec byte [alien_wave_remaining]
-    mov byte [alien_wave_gap_counter], 10
-    cmp byte [alien_wave_remaining], 0
-    jne .done
-    cmp byte [alien_wave_count], 4
-    jne .done
-    mov byte [boss_spawn_delay], 200
-
-.done:
-    ret
-
-spawn_boss:
-    push si
-    push di
-    push ax
-    push bx
-
-    mov si, sprites_list + BOSS_SLOT_INDEX*SPRITE_STRUCT_SIZE
-    mov di, boss_ship
-    call set_sprite_bitmap_and_cache
-
-    mov ax, HSIZE-32
-    mov [si+SPRITE_X], ax
-    shr ax, 1
-    shr ax, 1
-    mov [si+SPRITE_X_BYTE], ax
-
-    mov word [si+SPRITE_Y], 140
-    mov word [si+SPRITE_VX], -2
-    mov word [si+SPRITE_VY], 3
-    mov byte [si+SPRITE_MOVE_MODE], 1
-    mov word [si+SPRITE_POINTS], 1000
-    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
-    mov word [si+SPRITE_ACCUM_X], 0
-    mov word [si+SPRITE_ACCUM_Y], 0
-
-    mov bx, [si+SPRITE_Y]
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1
-    add bx, ax
-    add bx, [si+SPRITE_X_BYTE]
-    mov [si+SPRITE_VBUF_ADDR], bx
-    mov byte [si+SPRITE_COLLIDE], 0
-
-    mov byte [boss_active], 1
-
-    pop bx
-    pop ax
-    pop di
-    pop si
-    ret
 
 ; Respawn sprite 31 at saved spawn position and reactivate it.
 respawn_player:
@@ -1674,6 +1476,7 @@ int1c_handler:
     iret
 
 %include "graphics.asm"
+%include "rungine.asm"
 
 section .data align=16
 
@@ -1711,13 +1514,6 @@ tick_acc dw 0
 score dw 0
 lives db 3
 player_respawn_delay db 0
-asteroid_spawn_counter db 0
-alien_wave_remaining db 0
-alien_wave_gap_counter db 0
-alien_wave_cycle_counter dw 0
-alien_wave_count db 0
-boss_spawn_delay db 0
-boss_active db 0
 victory_flag db 0
 player_spawn_x dw 64
 player_spawn_y dw 64
@@ -1743,5 +1539,6 @@ y_base:
 
 %include "sprites.asm"
 %include "sounds.asm"
+%include "runbook.asm"
 
 sprites_list_seed times (32*SPRITE_STRUCT_SIZE) db 0

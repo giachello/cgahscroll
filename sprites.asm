@@ -43,6 +43,7 @@ cosine_table_40 dw 150,	149,	148,	145,	140,	135,	129,	123,	115,	108,	100,	92,	85
 %endmacro
 
 ; SPRITE_ENTRY Bitmap, X, Y, speed X, speed Y (or index into cosine table), collision status, movement mode  
+; the first 24 items are arbitrary, only entries 24-31 are fixed.
 sprites_list:
     ; 0
     SPRITE_ENTRY alien_ship, 0, 0, -2, 0, 7, 1, 100
@@ -58,7 +59,7 @@ sprites_list:
     SPRITE_ENTRY asteroid, 0, 0, 0, 0, 7, 0, 10
 %endrep
 
-    ; score and ships
+    ; score and ships indicator
     SPRITE_ENTRY numeral_0, 16, 188, 0, 0, 0, 0, 0
     SPRITE_ENTRY numeral_0, 24, 188, 0, 0, 0, 0, 0
     SPRITE_ENTRY numeral_0, 32, 188, 0, 0, 0, 0, 0
