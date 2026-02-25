@@ -1,4 +1,4 @@
-# Superfast - a completely vibecoded 8086 assembly code game (runs on the original IBM PC)
+# Superfast - a completely vibecoded 8086 assembly code game (including the clipart)
 
 This is a demo game that's entirely vibecoded with OpenAI's Codex 5.2. 
 
