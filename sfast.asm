@@ -10,7 +10,8 @@ PLAYER_SPRITE_INDEX EQU 31
 BOSS_SLOT_INDEX EQU 23
 HSIZE EQU 320
 VSIZE EQU 184
-MOUNTAIN_MAX_HEIGHT EQU 20
+MOUNTAIN_MAX_HEIGHT EQU 30
+MOUNTAIN_COLOR EQU 22h
 ASTEROID_SPAWN_CYCLE_DELAY EQU 20
 ALIEN_WAVE_CYCLE_DELAY EQU 320
  
@@ -268,7 +269,7 @@ exit_to_dos:
     ret
 
 ; -----------------------------
-; draw the next mountain column on the right edge. Mountains are 20 pixels tall and drawn in color 2.
+; draw the next mountain column on the right edge. Mountains are 20 pixels tall and use pattern 0AAh.
 next_mountain:
     ; Delete the last 8 columns of the screen
     mov ax, HSIZE-8
@@ -278,7 +279,7 @@ next_mountain:
     mov ax, VSIZE-1
     push ax
     xor ax, ax
-    push ax          ; color 0 = black
+    push ax          ; pattern 00h = black
     call fill_rect_8px_aligned
     add sp, 8
 
@@ -292,7 +293,7 @@ next_mountain:
     mov bx, MOUNTAIN_MAX_HEIGHT
     div bx             ; DX = 0..199
     push dx
-    mov ax, 2
+    mov ax, MOUNTAIN_COLOR
     push ax
     call fill_rect_8px_aligned
     add sp, 8
@@ -310,7 +311,7 @@ next_mountain:
 
     mov ax, VSIZE-1
     push ax
-    mov ax, 2
+    mov ax, MOUNTAIN_COLOR
     push ax
     call fill_rect_8px_aligned
     add sp, 8
@@ -500,7 +501,7 @@ start_new_game:
     push ax
     mov ax, 1
     push ax
-    mov ax, 2
+    mov ax, MOUNTAIN_COLOR
     push ax
     call fill_rect
     add sp, 10

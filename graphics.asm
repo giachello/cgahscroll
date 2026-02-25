@@ -27,27 +27,28 @@ print_string:
 
 
 ; -----------------------------
-; Fill rectangle (x1,y1)-(x2,y2) with color
-; Stack params (word): x1, y1, x2, y2, color. 
+; Fill rectangle (x1,y1)-(x2,y2) with a 4-pixel byte pattern.
+; Stack params (word): x1, y1, x2, y2, pattern_byte.
+; Alternates scanlines by rotating the pattern right by 2 bits.
 fill_rect:
     push bp
     mov bp, sp
     push si
     push di
-
-    ; Build 4-pixel pattern byte from 2-bit color
+    sub sp, 2
     mov al, [bp+4]
-    and al, 3
-    mov ah, al
-    mov cl, 2
-    shl ah, cl
-    or al, ah
-    mov ah, al
-    mov cl, 4
-    shl ah, cl
-    or al, ah
+    mov [bp-2], al
     mov si, [bp+10]    ; y1
 .y_loop:
+    ; Base pattern on even rows relative to y1, rotated pattern on odd rows.
+    mov al, [bp-2]
+    mov dx, si
+    sub dx, [bp+10]
+    test dl, 1
+    jz .pattern_ready
+    mov cl, 2
+    ror al, cl
+.pattern_ready:
     push ax             ; save ax which is used for color/pattern
     ; Compute scanline base offset in BX
     mov bx, si
@@ -162,6 +163,7 @@ fill_rect:
     cmp si, [bp+6]     ; y2
     jbe .y_loop
 
+    add sp, 2
     pop di
     pop si
     pop bp
@@ -169,30 +171,27 @@ fill_rect:
 
 
 ; -----------------------------
-; Fill 8-pixel wide rectangle at aligned X with color.
-; Stack params (word): x, y1, y2, color.
+; Fill 8-pixel wide rectangle at aligned X with a 4-pixel byte pattern.
+; Stack params (word): x, y1, y2, pattern_byte.
 ; Assumptions:
 ; - width is fixed at 8 pixels (2 bytes in mode 4)
 ; - x is aligned to an 8-pixel boundary
+; - odd scanlines use pattern rotated right by 2 bits
 fill_rect_8px_aligned:
     push bp
     mov bp, sp
     push si
     push di
+    sub sp, 2
 
-    ; Build 2-byte pattern word (both bytes hold the same 4-pixel pattern).
+    ; Build base and odd-row (rotated) pattern words.
     mov al, [bp+4]
-    and al, 3
     mov ah, al
+    mov dx, ax         ; DX = base pattern word
     mov cl, 2
-    shl ah, cl
-    or al, ah
+    ror al, cl
     mov ah, al
-    mov cl, 4
-    shl ah, cl
-    or al, ah
-    mov ah, al
-    mov dx, ax         ; DX = repeated byte pattern word
+    mov [bp-2], ax     ; [bp-2] = rotated pattern word
 
     ; Precompute x byte offset (x / 4), valid because x is 8-pixel aligned.
     mov di, [bp+10]
@@ -238,11 +237,13 @@ fill_rect_8px_aligned:
 .second_from_even:
     add bx, 8192               ; even plane -> next odd row
 .second_rows_loop:
-    mov [es:bx], dx
+    mov ax, [bp-2]
+    mov [es:bx], ax
     add bx, 80                 ; same parity next row
     loop .second_rows_loop
 .rows_done:
 
+    add sp, 2
     pop di
     pop si
     pop bp
