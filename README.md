@@ -6,7 +6,7 @@ I've always wanted to code a game like Gradius that would work on a 1981 IBM PC.
 
 Enter OpenAI Codex and vibe coding. I wrote this in a few hours while watching TV.
 
-It is written for the IBM PC in 8086 assembly language and runs on mulators like 86Box, DosBox and on original hardware (CGA/EGA/VGA required).
+It is written for the IBM PC in 8086 assembly language and runs on emulators like 86Box, DosBox and on original hardware (CGA/EGA/VGA required).
 
 <img width="955" height="720" alt="Screenshot 2026-02-21 at 23 06 50" src="https://github.com/user-attachments/assets/74aae0bd-9701-455c-bd58-21db654898c6" />
 <img width="959" height="724" alt="Screenshot 2026-02-21 at 23 08 34" src="https://github.com/user-attachments/assets/d7838a28-8829-4e23-918d-7a2672342b8d" />
