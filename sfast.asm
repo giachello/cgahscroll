@@ -249,6 +249,7 @@ exit_to_dos:
     xor bh, bh
     mov dh, 12
     mov dl, 16
+    sub dl, [start_addr]          ; adjust to center the strings
     int 10h
     mov si, game_over_text
     cmp byte [victory_flag], 0

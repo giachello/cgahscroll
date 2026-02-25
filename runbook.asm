@@ -1,6 +1,7 @@
 WAVE_KIND_ASTEROID         EQU 0
 WAVE_KIND_ALIEN            EQU 1
 WAVE_KIND_BOSS             EQU 2
+WAVE_KIND_STOP             EQU 3
 
 WAVE_FOREVER               EQU 255
 WAVE_DISABLE_ID            EQU 255
@@ -12,7 +13,7 @@ WAVE_DEF_REPEATS           EQU 5
 WAVE_DEF_SPAWNS            EQU 6
 WAVE_DEF_GAP               EQU 7
 WAVE_DEF_EXCLUSIVE         EQU 8
-WAVE_DEF_STOP_ON_LAST_START EQU 9
+WAVE_DEF_ACTION            EQU 9
 WAVE_DEF_ON_COMPLETE_WAVE  EQU 10
 WAVE_DEF_ON_COMPLETE_DELAY EQU 11
 WAVE_DEF_SIZE              EQU 13
@@ -27,10 +28,26 @@ WAVE_RT_DELAY_TARGET       EQU 7
 WAVE_RT_DELAY_REMAIN       EQU 8
 WAVE_RT_SIZE               EQU 10
 
-RUNBOOK_WAVE_COUNT         EQU 3
+RUNBOOK_WAVE_COUNT         EQU 4
+
+SPAWN_SLOT_POOLED          EQU 0
+SPAWN_SLOT_FIXED           EQU 1
+
+SPAWN_PROFILE_SPRITE_PTR   EQU 0
+SPAWN_PROFILE_SLOT_MODE    EQU 2
+SPAWN_PROFILE_SLOT_INDEX   EQU 3
+SPAWN_PROFILE_X_BASE       EQU 4
+SPAWN_PROFILE_X_RANGE      EQU 6
+SPAWN_PROFILE_Y_BASE       EQU 8
+SPAWN_PROFILE_Y_RANGE      EQU 10
+SPAWN_PROFILE_VX           EQU 12
+SPAWN_PROFILE_VY           EQU 14
+SPAWN_PROFILE_POINTS       EQU 16
+SPAWN_PROFILE_MOVE_MODE    EQU 18
+SPAWN_PROFILE_SIZE         EQU 19
 
 ; kind, start, period, repeats, spawns, gap, exclusive,
-; stop_wave_on_last_start, on_complete_wave, on_complete_delay
+; action, on_complete_wave, on_complete_delay
 runbook_defs:
     db WAVE_KIND_ASTEROID       ; kind
     dw 0                        ; start clock
@@ -39,53 +56,84 @@ runbook_defs:
     db 1                        ; only one asteroid per wave
     db 0                        ; no gap
     db 0                        ; not exclusive
-    db WAVE_DISABLE_ID          ; stop_wave_on_last_start
+    db 0                        ; action
     db WAVE_DISABLE_ID          ; on_complete_wave
     dw 0                        ; on_complete_delay
 
     db WAVE_KIND_ALIEN
-    dw 320                      ; start clock at 320 cycles
+    dw 640                      ; start clock
     dw 640                      ; period
     db 4                        ; repeat 4 times
     db 8                        ; spawn 8 aliens per wave  
     db 10                       ; gap between spawns
     db 0                        ; not exclusive
+    db 0                        ; action
+    db WAVE_DISABLE_ID          ; no chained wave
+    dw 0
+
+    db WAVE_KIND_STOP
+    dw 2759                     ; just before boss start
+    dw 0
+    db 1
+    db 1
     db 0
-    db WAVE_KIND_BOSS           ; start wave 2 (WAVE_KIND_BOSS) on completion
-    dw 200                      ; ...after 200 cycles
+    db 1                        ; run as exclusive action
+    db 0
+    db WAVE_DISABLE_ID
+    dw 0
 
     db WAVE_KIND_BOSS
+    dw 2760
     dw 0
-    dw 0
-    db 0
+    db 1
     db 1
     db 0
     db 1
-    db WAVE_DISABLE_ID
+    db 0
     db WAVE_DISABLE_ID
     dw 0
 
-; ------------------------------ Spawn tuning per kind
-asteroid_spawn_x     dw HSIZE-8
-asteroid_spawn_y_range dw VSIZE-8
-asteroid_vx          dw -2
-asteroid_vy          dw 0
-asteroid_move_mode   db 0
-asteroid_points      dw 10
+; ------------------------------ Spawn profile per kind:
+; x/y are fixed when range=0, otherwise base + random(0..range).
+spawn_profiles:
+    ; asteroid
+    dw asteroid
+    db SPAWN_SLOT_POOLED
+    db 0
+    dw HSIZE-8
+    dw 0
+    dw 0
+    dw VSIZE-8
+    dw -2
+    dw 0
+    dw 10
+    db 0
 
-alien_spawn_x        dw HSIZE-16
-alien_spawn_y        dw 140
-alien_vx             dw -2
-alien_vy             dw 3
-alien_move_mode      db 1
-alien_points         dw 100
+    ; alien
+    dw alien_ship
+    db SPAWN_SLOT_POOLED
+    db 0
+    dw HSIZE-16
+    dw 0
+    dw 140
+    dw 0
+    dw -2
+    dw 3
+    dw 100
+    db 1
 
-boss_spawn_x         dw 200
-boss_spawn_y         dw 64
-boss_vx              dw -2
-boss_vy              dw 0
-boss_move_mode       db 1
-boss_points          dw 1000
+    ; boss
+    dw boss_ship
+    db SPAWN_SLOT_FIXED
+    db BOSS_SLOT_INDEX
+    dw 200
+    dw 0
+    dw 64
+    dw 0
+    dw -2
+    dw 0
+    dw 1000
+    db 0
 
 ; ------------------------------ Runbook runtime
 runbook_clock        dw 0

@@ -55,6 +55,11 @@ runbook_tick:
     mov byte [runbook_exclusive_owner], WAVE_DISABLE_ID
 
     ; Pass 1: process delayed activations and discover exclusive owner.
+    ; Register ownership in pass 1:
+    ; - BP = wave index
+    ; - BX = runbook_defs cursor
+    ; - DI = runbook_rt cursor
+    ; - CX = loop counter (must survive full pass body)
     xor bp, bp
     mov cx, RUNBOOK_WAVE_COUNT
     mov bx, runbook_defs
@@ -99,6 +104,11 @@ runbook_tick:
     jnz .pass1
 
     ; Pass 2: start/spawn waves, honoring exclusive lock.
+    ; Register ownership in pass 2:
+    ; - BP = wave index
+    ; - BX = runbook_defs cursor
+    ; - DI = runbook_rt cursor
+    ; - CX = loop counter (callee calls must not leak CX changes)
     xor bp, bp
     mov cx, RUNBOOK_WAVE_COUNT
     mov bx, runbook_defs
@@ -132,7 +142,6 @@ runbook_tick:
     cmp byte [di+WAVE_RT_ENABLED], 0
     je .next_pass2
 
-    ; On last configured start, optional hook can disable another wave.
     mov al, [bx+WAVE_DEF_REPEATS]
     cmp al, 0
     je .next_pass2
@@ -147,17 +156,6 @@ runbook_tick:
     jb .next_pass2
 
     ; Consume one repeat (except forever mode), schedule next cycle, and queue burst size.
-    mov al, [bx+WAVE_DEF_REPEATS]
-    cmp al, WAVE_FOREVER
-    je .skip_last_start_hook
-    cmp byte [di+WAVE_RT_REPEATS_LEFT], 1
-    jne .skip_last_start_hook
-    mov al, [bx+WAVE_DEF_STOP_ON_LAST_START]
-    cmp al, WAVE_DISABLE_ID
-    je .skip_last_start_hook
-    call runbook_disable_wave_by_id
-.skip_last_start_hook:
-
     mov al, [bx+WAVE_DEF_REPEATS]
     cmp al, WAVE_FOREVER
     je .skip_repeat_dec
@@ -183,10 +181,13 @@ runbook_tick:
 .do_spawn:
     ; Attempt one spawn for this wave kind. On failure, keep pending count for later ticks.
     mov al, [bx+WAVE_DEF_KIND]
+    ; runbook_spawn_kind clobbers CX internally; preserve pass-2 loop state.
     push bx
+    push cx
     push di
     call runbook_spawn_kind
     pop di
+    pop cx
     pop bx
     cmp al, 0
     je .next_pass2
@@ -278,154 +279,98 @@ runbook_get_rt_ptr_in_bx:
 
 ; AL = wave kind. Returns AL = 1 on successful spawn, 0 otherwise.
 runbook_spawn_kind:
-    cmp al, WAVE_KIND_ASTEROID
-    je .asteroid
-    cmp al, WAVE_KIND_ALIEN
-    je .alien
+    cmp al, RUNBOOK_WAVE_COUNT
+    jae .fail
+    cmp al, WAVE_KIND_STOP
+    je .stop_all
     cmp al, WAVE_KIND_BOSS
-    je .boss
-    xor al, al
-    ret
-.asteroid:
-    call spawn_asteroid_kind
-    ret
-.alien:
-    call spawn_alien_kind
-    ret
-.boss:
-    call spawn_boss_kind
-    ret
-
-spawn_asteroid_kind:
-    mov si, sprites_list
-    mov cx, BOSS_SLOT_INDEX
-.find_free_slot:
-    cmp byte [si+SPRITE_COLLIDE], 6
-    jae .spawn_here
-    add si, SPRITE_STRUCT_SIZE
-    loop .find_free_slot
-    xor al, al
-    ret
-
-.spawn_here:
-    mov di, asteroid
-    call set_sprite_bitmap_and_cache
-
-    mov ax, [asteroid_spawn_x]
-    mov [si+SPRITE_X], ax
-    shr ax, 1
-    shr ax, 1
-    mov [si+SPRITE_X_BYTE], ax
-
-    call rand16
-    xor dx, dx
-    mov bx, [asteroid_spawn_y_range]
-    div bx
-    mov [si+SPRITE_Y], dx
-
-    mov ax, [asteroid_vx]
-    mov [si+SPRITE_VX], ax
-    mov ax, [asteroid_vy]
-    mov [si+SPRITE_VY], ax
-    mov al, [asteroid_move_mode]
-    mov [si+SPRITE_MOVE_MODE], al
-    mov ax, [asteroid_points]
-    mov [si+SPRITE_POINTS], ax
-
-    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
-    mov word [si+SPRITE_ACCUM_X], 0
-    mov word [si+SPRITE_ACCUM_Y], 0
-
-    mov bx, [si+SPRITE_Y]
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1
-    add bx, ax
-    add bx, [si+SPRITE_X_BYTE]
-    mov [si+SPRITE_VBUF_ADDR], bx
-    mov byte [si+SPRITE_COLLIDE], 0
-
-    mov al, 1
-    ret
-
-spawn_alien_kind:
-    mov si, sprites_list
-    mov cx, BOSS_SLOT_INDEX
-.find_free_slot:
-    cmp byte [si+SPRITE_COLLIDE], 6
-    jae .spawn_here
-    add si, SPRITE_STRUCT_SIZE
-    loop .find_free_slot
-    xor al, al
-    ret
-
-.spawn_here:
-    mov di, alien_ship
-    call set_sprite_bitmap_and_cache
-
-    mov ax, [alien_spawn_x]
-    mov [si+SPRITE_X], ax
-    shr ax, 1
-    shr ax, 1
-    mov [si+SPRITE_X_BYTE], ax
-
-    mov ax, [alien_spawn_y]
-    mov [si+SPRITE_Y], ax
-    mov ax, [alien_vx]
-    mov [si+SPRITE_VX], ax
-    mov ax, [alien_vy]
-    mov [si+SPRITE_VY], ax
-    mov al, [alien_move_mode]
-    mov [si+SPRITE_MOVE_MODE], al
-    mov ax, [alien_points]
-    mov [si+SPRITE_POINTS], ax
-
-    mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
-    mov word [si+SPRITE_ACCUM_X], 0
-    mov word [si+SPRITE_ACCUM_Y], 0
-
-    mov bx, [si+SPRITE_Y]
-    shl bx, 1
-    mov bx, [y_base+bx]
-    mov ax, [start_addr]
-    shl ax, 1
-    add bx, ax
-    add bx, [si+SPRITE_X_BYTE]
-    mov [si+SPRITE_VBUF_ADDR], bx
-    mov byte [si+SPRITE_COLLIDE], 0
-
-    mov al, 1
-    ret
-
-spawn_boss_kind:
+    jne .kind_ok
     cmp byte [boss_active], 0
     jne .fail
+.kind_ok:
+    cmp al, WAVE_KIND_BOSS
+    je .spawn_sprite
+    cmp al, WAVE_KIND_ALIEN
+    je .spawn_sprite
+    cmp al, WAVE_KIND_ASTEROID
+    jne .fail
 
-    push si
-    push di
+.spawn_sprite:
     push ax
-    push bx
+    call runbook_get_spawn_profile_ptr_in_bx
 
-    mov si, sprites_list + BOSS_SLOT_INDEX*SPRITE_STRUCT_SIZE
-    mov di, boss_ship
+    mov al, [bx+SPAWN_PROFILE_SLOT_MODE]
+    cmp al, SPAWN_SLOT_FIXED
+    je .fixed_slot
+
+    mov si, sprites_list
+    mov cx, BOSS_SLOT_INDEX
+.find_free_slot:
+    cmp byte [si+SPRITE_COLLIDE], 6
+    jae .have_slot
+    add si, SPRITE_STRUCT_SIZE
+    loop .find_free_slot
+    jmp .fail_pop_kind
+
+.fixed_slot:
+    mov si, sprites_list
+    xor cx, cx
+    mov cl, [bx+SPAWN_PROFILE_SLOT_INDEX]
+    jcxz .have_slot
+.seek_fixed_slot:
+    add si, SPRITE_STRUCT_SIZE
+    loop .seek_fixed_slot
+
+.have_slot:
+    mov di, [bx+SPAWN_PROFILE_SPRITE_PTR]
     call set_sprite_bitmap_and_cache
 
-    mov ax, [boss_spawn_x]
+    mov ax, [bx+SPAWN_PROFILE_X_BASE]
+    mov cx, [bx+SPAWN_PROFILE_X_RANGE]
+    cmp cx, 0
+    je .x_ready
+    push ax
+    push bx
+    push cx
+    call rand16
+    pop cx
+    pop bx
+    inc cx
+    xor dx, dx
+    div cx
+    pop ax
+    add ax, dx
+.x_ready:
     mov [si+SPRITE_X], ax
     shr ax, 1
     shr ax, 1
     mov [si+SPRITE_X_BYTE], ax
 
-    mov ax, [boss_spawn_y]
+    mov ax, [bx+SPAWN_PROFILE_Y_BASE]
+    mov cx, [bx+SPAWN_PROFILE_Y_RANGE]
+    cmp cx, 0
+    je .y_ready
+    push ax
+    push bx
+    push cx
+    call rand16
+    pop cx
+    pop bx
+    inc cx
+    xor dx, dx
+    div cx
+    pop ax
+    add ax, dx
+.y_ready:
     mov [si+SPRITE_Y], ax
-    mov ax, [boss_vx]
+
+    mov ax, [bx+SPAWN_PROFILE_VX]
     mov [si+SPRITE_VX], ax
-    mov ax, [boss_vy]
+    mov ax, [bx+SPAWN_PROFILE_VY]
     mov [si+SPRITE_VY], ax
-    mov al, [boss_move_mode]
+    mov al, [bx+SPAWN_PROFILE_MOVE_MODE]
     mov [si+SPRITE_MOVE_MODE], al
-    mov ax, [boss_points]
+    mov ax, [bx+SPAWN_PROFILE_POINTS]
     mov [si+SPRITE_POINTS], ax
 
     mov word [si+SPRITE_SCROLL_DELTA_BYTES], 0
@@ -442,16 +387,68 @@ spawn_boss_kind:
     mov [si+SPRITE_VBUF_ADDR], bx
     mov byte [si+SPRITE_COLLIDE], 0
 
+    pop dx
+    cmp dl, WAVE_KIND_BOSS
+    jne .not_boss
     mov byte [boss_active], 1
-
-    pop bx
-    pop ax
-    pop di
-    pop si
-
+.not_boss:
     mov al, 1
     ret
 
+.fail_pop_kind:
+    pop dx
 .fail:
     xor al, al
+    ret
+
+.stop_all:
+    call runbook_stop_other_waves
+    mov al, 1
+    ret
+
+; AL = wave kind, returns BX = spawn_profiles + kind*SPAWN_PROFILE_SIZE.
+runbook_get_spawn_profile_ptr_in_bx:
+    xor ah, ah
+    mov dx, ax              ; kind
+    add ax, ax              ; 2*kind
+    mov cx, ax              ; 2*kind
+    add ax, ax              ; 4*kind
+    add ax, ax              ; 8*kind
+    add ax, ax              ; 16*kind
+    add ax, cx              ; 18*kind
+    add ax, dx              ; 19*kind
+    mov bx, spawn_profiles
+    add bx, ax
+    ret
+
+; Stop all non-boss waves immediately (disable + clear pending state).
+runbook_stop_other_waves:
+    push bx
+    push cx
+    push di
+
+    mov cx, RUNBOOK_WAVE_COUNT
+    mov bx, runbook_defs
+    mov di, runbook_rt
+.loop:
+    mov al, [bx+WAVE_DEF_KIND]
+    cmp al, WAVE_KIND_BOSS
+    je .next
+    cmp al, WAVE_KIND_STOP
+    je .next
+    mov byte [di+WAVE_RT_ENABLED], 0
+    mov byte [di+WAVE_RT_ARMED], 0
+    mov byte [di+WAVE_RT_PENDING], 0
+    mov byte [di+WAVE_RT_GAP], 0
+    mov byte [di+WAVE_RT_DELAY_TARGET], WAVE_DISABLE_ID
+    mov word [di+WAVE_RT_DELAY_REMAIN], 0
+.next:
+    add bx, WAVE_DEF_SIZE
+    add di, WAVE_RT_SIZE
+    dec cx
+    jnz .loop
+
+    pop di
+    pop cx
+    pop bx
     ret
