@@ -72,7 +72,7 @@ runbook_defs:
     dw 0
 
     db WAVE_KIND_STOP
-    dw 2759                     ; just before boss start
+    dw 2700                     ; just before boss start
     dw 0
     db 1
     db 1
@@ -97,17 +97,17 @@ runbook_defs:
 ; x/y are fixed when range=0, otherwise base + random(0..range).
 spawn_profiles:
     ; asteroid
-    dw asteroid
-    db SPAWN_SLOT_POOLED
-    db 0
-    dw HSIZE-8
-    dw 0
-    dw 0
-    dw VSIZE-8
-    dw -2
-    dw 0
-    dw 10
-    db 0
+    dw asteroid                         ; sprite pointer
+    db SPAWN_SLOT_POOLED                ; slot mode (pooled or fixed)
+    db 0                                ; slot index (unused for pooled)
+    dw HSIZE-8                           ; x base
+    dw 0                                ; x range
+    dw 40                                ; y base
+    dw VSIZE-80                           ; y range
+    dw -4                               ; vx
+    dw 1                                ; vy
+    dw 10                               ; points
+    db 0                                ; move mode
 
     ; alien
     dw alien_ship
@@ -126,7 +126,7 @@ spawn_profiles:
     dw boss_ship
     db SPAWN_SLOT_FIXED
     db BOSS_SLOT_INDEX
-    dw 200
+    dw 240
     dw 0
     dw 64
     dw 0
