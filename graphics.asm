@@ -2,6 +2,8 @@
 ; Graphics routines
 
 ; print_string
+; init_bios_charset_ptr
+; write_string
 ; fill_rect
 ; fill_rect_8px_aligned
 ; clear_screen
@@ -24,6 +26,158 @@ print_string:
     pop bx
     pop ax
     ret
+
+; ------------------------------
+; Cache BIOS character set bitmap pointer into bios_charset_ptr (offset,segment). Only works on EGA +
+; Prefer INT 10h AX=1130h BH=00h (INT 1Fh 8x8 graphics font pointer),
+; then fall back to reading INT 1Fh vector directly from IVT.
+get_ega_bios_charset_ptr:
+    push es
+    push bp
+    push bx
+
+    mov ax, 1130h
+    mov bh, 03h
+    int 10h
+    mov [bios_charset_ptr], bp
+    mov [bios_charset_ptr+2], es
+
+    mov ax, [bios_charset_ptr]
+    or ax, [bios_charset_ptr+2]
+    jnz .done
+
+    mov ah, 35h
+    mov al, 1Fh
+    int 21h
+    mov [bios_charset_ptr], bx
+    mov [bios_charset_ptr+2], es
+
+.done:
+    pop bx
+    pop bp
+    pop es
+    ret
+
+; ------------------------------
+; Draw ASCIIZ string in graphics mode using BIOS charset bitmaps.
+; Stack params (word): str_ptr, x, y, color_mask.
+; Uses color_mask on even scanlines, and color_mask rotated right by 2 on odd scanlines.
+; Assumes x is 4-pixel aligned.
+write_string:
+    push bp
+    mov bp, sp
+    push si
+    push di
+    sub sp, 20
+
+    mov al, [bp+10]                ; color_mask low byte
+    mov [bp-2], al                 ; even mask
+    mov cl, 2
+    ror al, cl
+    mov [bp-4], al                 ; odd mask
+
+    mov ax, [bp+6]                 ; x
+    shr ax, 1
+    shr ax, 1
+    mov [bp-6], ax                 ; current x byte offset
+    mov ax, [bp+8]                 ; y
+    mov [bp-8], ax                 ; base y
+
+    mov si, [bp+4]                 ; string pointer (DS:SI)
+
+.char_loop:
+    lodsb
+    or al, al
+    jz .done
+
+    xor ah, ah
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1                      ; AX = char_code * 8
+    add ax, [bios_charset_ptr]     ; AX = glyph base offset in font segment
+    mov [bp-20], ax
+    mov word [bp-10], 0            ; row = 0
+
+.row_loop:
+    ; Read one font row byte from BIOS charset pointer using DS.
+    push ds
+    mov bx, [bp-20]
+    mov ax, [bios_charset_ptr+2]
+    mov ds, ax
+    mov al, [bx]
+    pop ds
+    mov [bp-14], al
+    inc bx
+    mov [bp-20], bx
+
+    ; Select row mask based on absolute scanline parity.
+    mov ax, [bp-8]
+    add ax, [bp-10]
+    test al, 1
+    jz .row_even
+    mov dl, [bp-4]
+    jmp .row_mask_ready
+.row_even:
+    mov dl, [bp-2]
+.row_mask_ready:
+
+    ; Compute destination row base in video memory.
+    mov ax, [bp-8]
+    add ax, [bp-10]
+    shl ax, 1
+    mov bx, ax
+    mov di, [y_base+bx]
+    mov ax, [start_addr]
+    shl ax, 1
+    add di, ax
+    add di, [bp-6]
+
+    ; Left 4 pixels (font bits 7..4) -> destination byte [ES:DI].
+    mov al, [bp-14]
+    mov cl, 4
+    shr al, cl
+    and al, 0Fh
+    xor bh, bh
+    mov bl, al
+    mov al, [write_string_nibble_to_pair_mask+bx]
+    mov ah, al
+    and al, dl
+    not ah
+    mov bl, [es:di]
+    and bl, ah
+    or bl, al
+    mov [es:di], bl
+
+    ; Right 4 pixels (font bits 3..0) -> destination byte [ES:DI+1].
+    mov al, [bp-14]
+    and al, 0Fh
+    xor bh, bh
+    mov bl, al
+    mov al, [write_string_nibble_to_pair_mask+bx]
+    mov ah, al
+    and al, dl
+    not ah
+    mov bl, [es:di+1]
+    and bl, ah
+    or bl, al
+    mov [es:di+1], bl
+
+    inc word [bp-10]
+    cmp word [bp-10], 8
+    jb .row_loop
+
+    add word [bp-6], 2
+    jmp .char_loop
+
+.done:
+    add sp, 20
+    pop di
+    pop si
+    pop bp
+    ret
+
+write_string_nibble_to_pair_mask:
+    db 00h,03h,0Ch,0Fh,30h,33h,3Ch,3Fh,0C0h,0C3h,0CCh,0CFh,0F0h,0F3h,0FCh,0FFh
 
 
 ; -----------------------------

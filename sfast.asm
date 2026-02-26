@@ -246,18 +246,21 @@ exit_to_dos:
     call set_pit_rate ; set clock back to 18.2hz
 
     stop_sound
-    mov ah, 02h
-    xor bh, bh
-    mov dh, 12
-    mov dl, 16
-    sub dl, [start_addr]          ; adjust to center the strings
-    int 10h
-    mov si, game_over_text
+    mov ax, game_over_text
     cmp byte [victory_flag], 0
     je .print_end_text
-    mov si, victory_text
+    mov ax, victory_text
 .print_end_text:
-    call print_string
+    mov bx, ax
+    mov ax, 0bbh
+    push ax                        ; color mask
+    mov ax, 96
+    push ax                        ; y (row 12 * 8)
+    mov ax, 128
+    push ax                        ; x (col 16 * 8)
+    push bx                        ; ASCIIZ pointer
+    call write_string
+    add sp, 8
 
 
     mov ah, 00h     ; Wait for key
@@ -538,23 +541,29 @@ show_title_screen:
 
     play_sound melody
 
-    ; Print "(C) THX 2026"
-    mov ah, 02h
-    xor bh, bh
-    mov dh, 20
-    mov dl, 13
-    int 10h
-    mov si, title_line_1
-    call print_string
+    ; Print "(C) THX 2026" at text cursor-equivalent position: col 13,row 20 => x=104,y=160.
+    mov ax, 077h
+    push ax
+    mov ax, 160
+    push ax
+    mov ax, 104
+    push ax
+    mov ax, title_line_1
+    push ax
+    call write_string
+    add sp, 8
 
-    ; Print "PRESS SPACE TO PLAY"
-    mov ah, 02h
-    xor bh, bh
-    mov dh, 22
-    mov dl, 10
-    int 10h
-    mov si, title_line_2
-    call print_string
+    ; Print "PRESS SPACE TO PLAY" at col 10,row 22 => x=80,y=176.
+    mov ax, 077h
+    push ax
+    mov ax, 176
+    push ax
+    mov ax, 80
+    push ax
+    mov ax, title_line_2
+    push ax
+    call write_string
+    add sp, 8
 
 .wait_key:
     call get_scancode
@@ -1517,6 +1526,7 @@ score dw 0
 lives db 3
 player_respawn_delay db 0
 victory_flag db 0
+bios_charset_ptr dw 0FA6Eh,0f000h      ; CGA font data 
 player_spawn_x dw 64
 player_spawn_y dw 64
 numeral_ptrs dw numeral_0, numeral_1, numeral_2, numeral_3, numeral_4, numeral_5, numeral_6, numeral_7, numeral_8, numeral_9

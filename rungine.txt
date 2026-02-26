@@ -1,0 +1,53 @@
+Description of the wave state machine
+=====================================
+
+`runbook_rt` is a per-wave runtime state machine layered on top of static `runbook_defs`.
+
+Core loop is in [`runbook_tick`](/Users/giac/Coding/cgahscroll/rungine.asm:45), and it runs in two passes each frame:
+
+1. Pass 1 (`delay + lock`):
+- Decrements `WAVE_RT_DELAY_REMAIN`; when it expires, it arms another wave via `WAVE_RT_DELAY_TARGET` (`runbook_arm_wave_by_id`).
+- Selects one exclusive wave (if any) as `runbook_exclusive_owner`; only that wave can run in pass 2.
+
+2. Pass 2 (`start + spawn`):
+- Skips non-owner waves if an exclusive owner exists.
+- For each wave, state progression is effectively:
+
+`Disabled`
+- `WAVE_RT_ENABLED=0`, ignored by auto-start checks.
+- Entered by `runbook_disable_wave_by_id` / `runbook_stop_other_waves`.
+
+`Idle/Waiting`
+- `PENDING=0`, not armed.
+- Waits for either explicit arm (`WAVE_RT_ARMED=1`) or auto-start condition:
+  - enabled
+  - repeats allowed (`REPEATS_LEFT > 0` unless forever)
+  - `runbook_clock >= WAVE_RT_NEXT_START`
+
+`Armed`
+- Explicit/manual trigger path: clears `ARMED`, immediately queues a burst (`PENDING=def.spawns`, `GAP=0`).
+
+`Burst Active`
+- `PENDING>0`
+- If `GAP>0`, decrements cooldown.
+- If `GAP=0`, tries one spawn (`runbook_spawn_kind`).
+  - spawn fail: stay in same state, retry next tick.
+  - spawn success: `PENDING--`
+    - if more pending: set `GAP=def.gap`
+    - if burst finished: may schedule delayed follow-up wave (on final repeat only).
+
+`Delayed Follow-up Pending`
+- `DELAY_TARGET!=WAVE_DISABLE_ID`, `DELAY_REMAIN` counts down in pass 1.
+- On expiry, target wave gets armed.
+
+The runtime fields being mutated are:
+- enable/control: `ENABLED`, `ARMED`
+- burst pacing: `PENDING`, `GAP`
+- schedule: `NEXT_START`, `REPEATS_LEFT`
+- chain trigger: `DELAY_TARGET`, `DELAY_REMAIN`
+
+Helpers that make those transitions explicit are:
+- [`runbook_queue_burst_from_def`](/Users/giac/Coding/cgahscroll/rungine.asm:217)
+- [`runbook_maybe_schedule_on_complete`](/Users/giac/Coding/cgahscroll/rungine.asm:225)
+- [`runbook_clear_rt_state_in_di`](/Users/giac/Coding/cgahscroll/rungine.asm:245)
+
